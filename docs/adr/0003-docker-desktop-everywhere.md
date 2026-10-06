@@ -1,6 +1,6 @@
 # ADR-0003: Docker desktop everywhere
 
-Status: Accepted. Date: 2026-10-06. Decided by: JV (D3).
+Status: Accepted, amended by ADR-0014 (the model server may run natively; only the agent needs Docker). Date: 2026-10-06. Decided by: JV (D3).
 
 ## Context
 

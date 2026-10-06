@@ -1,6 +1,6 @@
 # ADR-0002: Proxy server and gpu workers
 
-Status: Accepted. Date: 2026-10-06. Decided by: JV.
+Status: Accepted, amended by ADR-0014 (workers are not tied to llama-server). Date: 2026-10-06. Decided by: JV.
 
 ## Context
 

@@ -30,15 +30,15 @@ Checks: API tests for setup-once, wrong code, login, role enforcement, CSRF reje
 
 ## 2. Worker registry and the worker stack (parallel with 1)
 
-Outcome: on the Mac, `worker/compose.yml` with the CPU profile starts llama-server with Gemma 4 E2B and an agent, and the worker shows up in the app.
+Outcome: on the Mac, the agent in front of a native Ollama (or llama-server) running Gemma 4 E2B shows up in the app as a worker with its models.
 
-- `worker/compose.yml` (cpu and nvidia profiles), `worker/agent.py`.
-- `/api/workers/heartbeat` with join token, deny list, down after 45 s, least-busy routing function, model list built from heartbeats, models on/off.
-- Admin page section: join token and command (bash and PowerShell), worker list with status, models and free slots, remove worker, rotate token, model toggles.
+- `worker/agent.py` (auth proxy and heartbeat), its Dockerfile and `worker/compose.yml`. `worker/recipes/`: llama-server compose with nvidia and cpu profiles, Ollama notes.
+- `/api/workers/heartbeat` with join token, deny list, down after 45 s, routing by spare capacity from in-flight counts, model list built from heartbeats, models on/off.
+- Admin page section: join token and command (bash and PowerShell), worker list with status, models and capacity, remove worker, rotate token, model toggles.
 
 Requirements: R2.1-R2.5, R3.1.
 
-Checks: unit tests for routing and down-detection with a fake clock. API tests for token rejection, removed worker rejection, model toggle. Manual: start the worker stack on the Mac and see it go up, stop it and see it go down within a minute.
+Checks: unit tests for routing and down-detection with a fake clock. API tests for token rejection, removed worker rejection, model toggle. Agent tests: request without the key refused, streaming forwarded, heartbeat payload built from a fake backend. Manual: start the worker stack on the Mac and see it go up, stop it and see it go down within a minute.
 
 ## 3. Classes and lesson sessions
 
@@ -135,7 +135,7 @@ Depends on 8.
 Outcome: measured capacity for 30 students on the Windows GPU.
 
 - `tests/load.py`: 30 simulated students, realistic message pacing, counts lost and unrecorded messages, reports time to first segment and guard latency.
-- Publish the numbers in `docs/capacity.md`. If time to first segment is far over five seconds, try longer guard segments and more llama-server slots, and record each result.
+- Publish the numbers in `docs/capacity.md`. If time to first segment is far over five seconds, try longer guard segments and more model-server concurrency, and record each result.
 
 Requirements: acceptance 12, PRD outcome on reply time.
 

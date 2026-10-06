@@ -1,6 +1,6 @@
 # ADR-0007: Llama server one model per worker
 
-Status: Accepted. Date: 2026-10-06. Decided by: Lead agent.
+Status: Superseded by ADR-0014. Date: 2026-10-06. Decided by: Lead agent.
 
 ## Context
 

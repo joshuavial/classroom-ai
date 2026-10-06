@@ -28,10 +28,13 @@ student browsers (phone, tablet, Chromebook, lab PC)      teacher browser
 +------------------------------------------------------------------+
         |  HTTP + per-worker API key, LAN
         v
-+------------- each GPU machine: worker/compose.yml ---------------+
-| llm        llama-server (CUDA image on Windows/Linux NVIDIA,     |
-|            CPU image on a Mac), one chat model                   |
-| agent      heartbeats to the server every 15 s                   |
++------------------------ each GPU machine ------------------------+
+| agent      the only port the server talks to. Checks the API     |
+|            key, forwards to the model server, heartbeats every   |
+|            15 s with the models it offers. Docker container.     |
+| model      any OpenAI-compatible server the school prefers:      |
+| server     llama-server, Ollama, vLLM, ... in Docker or native.  |
+|            Reachable only by the agent.                          |
 +------------------------------------------------------------------+
 ```
 
@@ -43,16 +46,16 @@ Two compose files, one per machine role. Both build from this repository, so ins
 | --- | --- | --- |
 | App language | Python 3.14 | Readable by a school IT person. Mature async HTTP. |
 | Web framework | Starlette + uvicorn | Routing, SSE streaming and static files with few dependencies. FastAPI adds validation and docs we do not need. |
-| Outbound HTTP | httpx | Async streaming to llama-server. |
+| Outbound HTTP | httpx | Async streaming to workers. |
 | Database | SQLite through the stdlib `sqlite3`, WAL mode | One file to back up. 30 students is far inside its write capacity. No ORM. |
 | Password hashing | stdlib `hashlib.scrypt` | No extra dependency. |
 | Front end | Plain HTML, CSS and JavaScript ES modules, served as static files. No build step. | Anyone can read and change it. No Node toolchain in the image. |
 | TLS | Caddy 2.11 with `tls internal` | Automatic local certificate authority, no internet needed. |
-| Model server | llama.cpp `llama-server`, official `ghcr.io/ggml-org/llama.cpp` images (`server` for CPU, `server-cuda` for NVIDIA), pinned to a build tag | MIT, OpenAI-compatible, parallel slots, GGUF fits 8-24 GB cards, runs on CPU for dev. |
+| Model server on workers | Any OpenAI-compatible server (ADR-0014). Documented recipes: llama.cpp `llama-server` in Docker, and Ollama installed natively | The school runs GPUs however suits its machines. The agent gives every backend the same interface and the same auth. |
 | Guard model | Qwen3Guard-Gen-0.6B, community GGUF `mradermacher/Qwen3Guard-Gen-0.6B-GGUF` Q8_0, pinned by file hash, on a CPU llama-server | Apache-2.0, small enough for CPU, covers the R6.3 categories. Qwen publishes no GGUF, so the hash pin is how we know which weights we run. |
-| Chat model defaults | Gemma 4 from the official `ggml-org` GGUFs: 12B-it on 16 GB, E4B-it on 8 GB, E2B-it on CPU for the Mac | Apache-2.0 with official GGUFs. Qwen3 is superseded by Qwen3.5, which has only community GGUFs at the sizes we need. |
+| Suggested chat models in the recipes | Gemma 4: 12B-it on 16 GB, E4B-it on 8 GB, E2B-it on CPU | Apache-2.0 with official GGUFs. Qwen3 is superseded by Qwen3.5, which has only community GGUFs at the sizes we need. |
 
-Versions at time of writing: Python 3.14.8, Starlette 1.7.0, uvicorn 0.54.0, httpx 0.28.1, Caddy 2.11.7, llama.cpp build b11433. Pinned versions go in `pyproject.toml`, `compose.yml` (images pinned by tag and digest) and `worker/compose.yml`. Upgrading means changing those pins in a release.
+Versions at time of writing: Python 3.14.8, Starlette 1.7.0, uvicorn 0.54.0, httpx 0.28.1, Caddy 2.11.7, llama.cpp build b11433 (recipe and guard). Pinned versions go in `pyproject.toml`, `compose.yml` (images pinned by tag and digest) and the worker recipes. Upgrading means changing those pins in a release.
 
 Three runtime Python dependencies: starlette, uvicorn, httpx. Tests add pytest and pytest-asyncio.
 
@@ -75,8 +78,10 @@ app/
   admin.py                backup, restore, retention, export, audit
   static/                 student.html, teacher.html, admin.html, css, js
 worker/
-  compose.yml             llama-server + agent
-  agent.py                heartbeat loop, stdlib only
+  agent.py                auth proxy + heartbeat
+  Dockerfile              agent image
+  compose.yml             agent only, pointed at an existing model server
+  recipes/                llama-server compose (nvidia, cpu), Ollama notes
 tests/
 docs/
 LICENSES.md               every component and default model with its licence
@@ -104,16 +109,23 @@ A second llama-server container on the server's internal compose network, CPU on
 
 ### worker
 
-`worker/compose.yml` runs two containers:
+A worker is any machine running an OpenAI-compatible model server plus the agent (ADR-0014). The project doesn't dictate how the model server runs.
 
-- `llm`: llama-server with one chat model, `--api-key` set to a key the agent generates on first start, `-np 4` slots by default. The port is published on the LAN so the server can reach it.
-- `agent`: about 50 lines of stdlib Python. Every 15 seconds it reads llama-server's `/health`, `/v1/models` and `/slots` (with the API key), then POSTs to the server's `/api/workers/heartbeat` with the join token, its own address, its API key, its models and its free slots.
+The agent is a small Starlette app in its own Docker image (same dependencies as the server app). It does two jobs:
 
-The join command the admin console shows is one line that sets `SERVER_URL` and `JOIN_TOKEN` and runs `docker compose -f worker/compose.yml up -d`. On Windows it is the PowerShell form of the same line.
+- Auth proxy. It publishes the worker's only LAN port, requires the worker's API key on every request, and forwards `/v1/chat/completions` and `/v1/models` to the model server, streaming. The model server listens only on localhost or a Docker network. This gives every backend the same auth, including Ollama, which has none of its own.
+- Heartbeat. Every 15 seconds it reads `/v1/models` from the model server and POSTs to the server's `/api/workers/heartbeat` with the join token, its address, its API key, the models it offers and its capacity (`MAX_CONCURRENT`, default 4).
 
-GPU access: the `nvidia` compose profile requests the device with `gpus: all`. On Windows that needs Docker Desktop with the WSL2 backend and a current NVIDIA driver on Windows itself, nothing installed inside WSL. On a Mac, Docker cannot use the Apple GPU, so the `cpu` profile runs the CPU image with Gemma 4 E2B. That is for development only. Docker Model Runner can use the Mac GPU but has no API key, so it is not a worker option.
+Configuration is four environment variables: `SERVER_URL`, `JOIN_TOKEN`, `BACKEND_URL` and optionally `MAX_CONCURRENT`. The agent generates its API key on first start and keeps it in a volume. The join command the admin console shows is one line that sets these and runs `docker compose -f worker/compose.yml up -d`, in bash and PowerShell forms.
 
-ponytail: one model per worker. A machine that should offer two models runs the worker stack twice on different ports. llama-server's router mode (`--models-dir`, `--models-max`) can serve several from one process; switch to it once a machine needs to swap models on demand, since swapping mid-lesson stalls the class.
+Recipes for the model server, in `worker/recipes/`:
+
+- llama-server in Docker: `nvidia` profile with `gpus: all` (Windows needs Docker Desktop on WSL2 and a current NVIDIA driver on Windows itself), `cpu` profile for anything else.
+- Ollama installed natively: uses the GPU directly on Windows, Linux and the Mac (Metal). Set `OLLAMA_NUM_PARALLEL` to match `MAX_CONCURRENT`.
+
+On the Mac, development uses native Ollama or llama-server with Metal behind the agent, which is faster than a CPU container.
+
+Busyness: the server counts its own in-flight requests per worker and routes to the worker with the most spare capacity. That works for every backend, where llama-server's `/slots` would not.
 
 ## Turn pipeline
 
@@ -122,7 +134,7 @@ Every student message goes through `chat.py`:
 1. Check the student's session is open, not paused, and under the message limit. Refuse if not.
 2. Store the message.
 3. Guard the prompt. Store the verdict. If the category action blocks, store the block, publish to the teacher, and return the block text: the school's message for self-harm, a plain explanation otherwise. Flag if the action flags.
-4. Pick a live worker serving the chosen model with the most free slots. If none, return a "no model available" message and store that.
+4. Pick a live worker serving the chosen model with the most spare capacity (its `MAX_CONCURRENT` minus requests in flight). If none, return a "no model available" message and store that.
 5. Send the class instructions, the conversation so far and the message to the worker, streaming.
 6. Release the reply in segments. Buffer tokens to the end of a sentence or 300 characters, guard the reply so far together with the prompt, then send the segment to the student. If a segment trips the guard, stop the generation, store everything generated, and replace what follows with the block text. Text already shown stays shown, and the flag records that.
 7. Store the full reply and publish the turn to the teacher's live view.
@@ -169,7 +181,7 @@ Join codes can be guessed: 30 tries per minute per IP address on the join endpoi
 
 - The admin console shows the join token and can rotate it. Rotating it drops every worker until each is rejoined.
 - A heartbeat without the current token is rejected. A removed worker is put on a deny list by worker ID, so its heartbeats are rejected even with the token.
-- The server sends the worker's API key on every model request. A student device that reaches the worker port without the key is refused (acceptance 5). The network docs add a firewall rule allowing only the server's address.
+- The server sends the worker's API key on every model request. A student device that reaches the agent's port without the key is refused, and the model server itself is not on the LAN (acceptance 5). The network docs add a firewall rule allowing only the server's address.
 - Server-to-worker traffic is plain HTTP on the school LAN. Sharing GPUs between schools (vision, later increment) needs that link encrypted, for example a WireGuard tunnel between the sites. Nothing else in the design assumes the worker is on the same network.
 - Model requests already carry no identity: the app sends only the class instructions and the conversation text, never a student name, class name, school or user field. Keep it that way, because it is what lets a school's server anonymise traffic to another school's GPUs. Cross-school sharing adds a redaction step (for example Presidio) on requests bound for a remote worker.
 - A worker missing three heartbeats (45 seconds) is marked down and gets no requests (R2.4: within a minute). A request that fails to connect marks the worker down at once and retries on another worker serving the same model.
@@ -188,7 +200,7 @@ SQLite file in the `data` volume. Tables:
 | `conversations` | Student, model, started time. |
 | `messages` | Conversation, role, text, time, status (ok, blocked, error), worker used. |
 | `flags` | Message, category, action taken, reviewed by, reviewed at. |
-| `workers` | ID, address, API key, models, free slots, last heartbeat, removed. |
+| `workers` | ID, address, API key, models, capacity, last heartbeat, removed. |
 | `models` | Model name, enabled. |
 | `settings` | Key/value: category actions, self-harm message, retention days (30), join token. |
 | `audit` | Who, what, when, for staff actions (R7.4). |
@@ -234,7 +246,7 @@ Live view: the app publishes an event per stored message, flag, join and state c
 
 - Unit tests with pytest for verdict parsing, category mapping, routing choice, rate limits, retention and migrations.
 - API tests drive the Starlette app in-process with httpx's ASGI transport against a temporary SQLite file. A fake worker and a fake guard are small Starlette apps that stream canned replies and verdicts, so tests need no models.
-- One smoke test boots the real compose stack with the CPU worker and Gemma 4 E2B, joins a student, and checks a reply arrives and appears in the teacher stream. Run on demand on the Mac, not in every test run.
+- One smoke test boots the real compose stack with an agent in front of a local model server running Gemma 4 E2B, joins a student, and checks a reply arrives and appears in the teacher stream. Run on demand on the Mac, not in every test run.
 - Guard check: a fixed list of test prompts per R6.3 category run against the real guard (acceptance 7), on demand.
 - Load test: `tests/load.py` simulates 30 students over the HTTP API and reports lost messages and time to first segment (acceptance 12). Run on the Windows GPU machine.
 - Front end: checked by hand against `docs/manual-tests.md` on a phone, a tablet and a laptop. Browser automation waits until the pages settle.
