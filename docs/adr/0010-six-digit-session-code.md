@@ -1,6 +1,6 @@
 # ADR-0010: Six digit session code
 
-Status: Accepted. Date: 2026-10-06.
+Status: Proposed. Date: 2026-10-06.
 ## Context
 
 Getting students in must take seconds and need no accounts.

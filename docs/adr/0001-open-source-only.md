@@ -1,6 +1,6 @@
 # ADR-0001: Open source only
 
-Status: Accepted. Date: 2026-10-06.
+Status: Proposed. Date: 2026-10-06.
 ## Context
 
 Schools need something they can audit, fork and keep running without a vendor. Many classroom AI products are paid cloud services.
@@ -11,4 +11,4 @@ Every component is OSI-licensed and every model openly licensed. No SaaS, vendor
 
 ## Consequences
 
-Some strong tools are excluded. Docker Desktop is proprietary but free for schools; it is a host prerequisite, not a shipped component, and Docker Engine is the open option on Linux.
+Some strong tools are excluded. Docker Desktop is a host prerequisite, not a shipped component. It is proprietary and free only for organisations under 250 employees and US$10M revenue. Its terms say government entities need a paid subscription, which may include state schools. Docker Engine is the open option on Linux. Which container runtime the project recommends is an open question.

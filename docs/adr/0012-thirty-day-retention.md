@@ -1,6 +1,6 @@
 # ADR-0012: Thirty day retention
 
-Status: Accepted. Date: 2026-10-06.
+Status: Proposed. Date: 2026-10-06.
 ## Context
 
 Minors' chats should be kept no longer than needed.

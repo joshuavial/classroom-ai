@@ -48,12 +48,12 @@ Two compose files, one per machine role. Both build from this repository, so ins
 | App language | Python 3.14 | Readable by a school IT person. Mature async HTTP. |
 | Web framework | Starlette + uvicorn | Routing and SSE streaming with few dependencies. FastAPI adds validation and docs we do not need. |
 | Outbound HTTP | httpx | Async streaming to workers. |
-| Database | PostgreSQL 18, official `postgres` image (ADR-0015) | Several app processes can share it. `LISTEN`/`NOTIFY` carries live updates. Easy to query for reports. |
+| Database | PostgreSQL 18, official `postgres` image (ADR-0005) | Several app processes can share it. `LISTEN`/`NOTIFY` carries live updates. Easy to query for reports. |
 | Database driver | psycopg 3 with `psycopg-pool` (async pool) | LGPL-3.0. Plain SQL, no ORM. |
 | Password hashing | stdlib `hashlib.scrypt` | No extra dependency. |
-| Front end | Next.js (App Router, TypeScript) with React and plain CSS modules, built with `output: "standalone"` and run on Node.js 24 LTS in its own `web` image (ADR-0016) | Easier to build a pleasant teacher console, with component tests. MIT licensed. Holds no data and no secrets. |
+| Front end | Next.js (App Router, TypeScript) with React and plain CSS modules, built with `output: "standalone"` and run on Node.js 24 LTS in its own `web` image (ADR-0006) | Easier to build a pleasant teacher console, with component tests. MIT licensed. Holds no data and no secrets. |
 | TLS | Caddy 2.11 with `tls internal` | Automatic local certificate authority, no internet needed. |
-| Model server on workers | Any OpenAI-compatible server (ADR-0014). Documented recipes: llama.cpp `llama-server` in Docker, and Ollama installed natively | The school runs GPUs however suits its machines. The agent gives every backend the same interface and the same auth. |
+| Model server on workers | Any OpenAI-compatible server (ADR-0007). Documented recipes: llama.cpp `llama-server` in Docker, and Ollama installed natively | The school runs GPUs however suits its machines. The agent gives every backend the same interface and the same auth. |
 | Guard model | Qwen3Guard-Gen-0.6B, community GGUF `mradermacher/Qwen3Guard-Gen-0.6B-GGUF` Q8_0, pinned by file hash, on a CPU llama-server | Apache-2.0, small enough for CPU, covers the R6.3 categories. Qwen publishes no GGUF, so the hash pin is how we know which weights we run. |
 | Suggested chat models in the recipes | Gemma 4: 12B-it on 16 GB, E4B-it on 8 GB, E2B-it on CPU | Apache-2.0 with official GGUFs. Qwen3 is superseded by Qwen3.5, which has only community GGUFs at the sizes we need. |
 
@@ -110,7 +110,7 @@ The app serves only the JSON API under `/api/` and `/healthz`.
 
 ### web
 
-The Next.js app in `web/` (ADR-0016). It holds no data and no secrets. Pages are client components that call the app's JSON API. Server-side rendering features stay minimal, and no server action talks to the database. Three web surfaces:
+The Next.js app in `web/` (ADR-0006). It holds no data and no secrets. Pages are client components that call the app's JSON API. Server-side rendering features stay minimal, and no server action talks to the database. Three web surfaces:
 
 - `/` student chat. Join, model picker, conversation list, chat.
 - `/teach` teacher console. Session controls, live class grid, transcripts, flags, usage summary.
@@ -124,7 +124,7 @@ A second llama-server container on the server's internal compose network, CPU on
 
 ### worker
 
-A worker is any machine running an OpenAI-compatible model server plus the agent (ADR-0014). The project doesn't dictate how the model server runs.
+A worker is any machine running an OpenAI-compatible model server plus the agent (ADR-0007). The project doesn't dictate how the model server runs.
 
 The agent is a small Starlette app in its own Docker image (same dependencies as the server app). It does two jobs:
 
@@ -203,7 +203,7 @@ Join codes can be guessed: 30 tries per minute per IP address on the join endpoi
 
 ## Data
 
-PostgreSQL in the `db` service, data in the `pgdata` volume (ADR-0015). Credentials are in `.env`, generated at install. Tables:
+PostgreSQL in the `db` service, data in the `pgdata` volume (ADR-0005). Credentials are in `.env`, generated at install. Tables:
 
 | Table | Holds |
 | --- | --- |

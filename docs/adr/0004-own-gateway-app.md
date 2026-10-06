@@ -1,6 +1,6 @@
 # ADR-0004: Own gateway app
 
-Status: Accepted. Date: 2026-10-06.
+Status: Proposed. Date: 2026-10-06.
 ## Context
 
 Every request must be stored and checked, and routed to a live worker.

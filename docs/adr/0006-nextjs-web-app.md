@@ -1,10 +1,10 @@
-# ADR-0016: Next.js web app
+# ADR-0006: Next.js web app
 
-Status: Accepted. Supersedes ADR-0006. Date: 2026-10-07.
+Status: Proposed. Date: 2026-10-07.
 
 ## Context
 
-ADR-0006 made the student, teacher and admin pages plain HTML, CSS and JavaScript served as they are written. The teacher console has a live card grid, a transcript panel, a usage strip and flag review, all updating over SSE. Building that by hand in plain modules is slow, and it has to be pleasant for a non-technical teacher. A component framework with a test runner makes it easier to build and to test.
+Open WebUI is non-OSI from v0.6.6. LibreChat has no live teacher view and needs MongoDB. So the project builds its own student, teacher and admin pages. The teacher console has a live card grid, a transcript panel, a usage strip and flag review, all updating over SSE. Building that by hand in plain HTML and JavaScript modules is slow, and it has to be pleasant for a non-technical teacher. A component framework with a test runner makes it easier to build and to test.
 
 ## Decision
 
