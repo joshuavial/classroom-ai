@@ -22,7 +22,8 @@ student browsers (phone, tablet, Chromebook, lab PC)      teacher browser
 | caddy      TLS, the only published ports (443, 80 -> 443)        |
 | app        Python: student chat, teacher console, admin,         |
 |            auth, logging, guard pipeline, worker registry,       |
-|            routing to workers. SQLite in a volume.               |
+|            routing to workers.                                   |
+| db         postgres, data in a volume. Internal network only.    |
 | guard      llama-server on CPU, Qwen3Guard-Gen-0.6B. Internal    |
 |            network only.                                         |
 +------------------------------------------------------------------+
@@ -47,7 +48,8 @@ Two compose files, one per machine role. Both build from this repository, so ins
 | App language | Python 3.14 | Readable by a school IT person. Mature async HTTP. |
 | Web framework | Starlette + uvicorn | Routing, SSE streaming and static files with few dependencies. FastAPI adds validation and docs we do not need. |
 | Outbound HTTP | httpx | Async streaming to workers. |
-| Database | SQLite through the stdlib `sqlite3`, WAL mode | One file to back up. 30 students is far inside its write capacity. No ORM. |
+| Database | PostgreSQL 18, official `postgres` image (ADR-0015) | Several app processes can share it. `LISTEN`/`NOTIFY` carries live updates. Easy to query for reports. |
+| Database driver | psycopg 3 with `psycopg-pool` (async pool) | LGPL-3.0. Plain SQL, no ORM. |
 | Password hashing | stdlib `hashlib.scrypt` | No extra dependency. |
 | Front end | Plain HTML, CSS and JavaScript ES modules, served as static files. No build step. | Anyone can read and change it. No Node toolchain in the image. |
 | TLS | Caddy 2.11 with `tls internal` | Automatic local certificate authority, no internet needed. |
@@ -55,9 +57,9 @@ Two compose files, one per machine role. Both build from this repository, so ins
 | Guard model | Qwen3Guard-Gen-0.6B, community GGUF `mradermacher/Qwen3Guard-Gen-0.6B-GGUF` Q8_0, pinned by file hash, on a CPU llama-server | Apache-2.0, small enough for CPU, covers the R6.3 categories. Qwen publishes no GGUF, so the hash pin is how we know which weights we run. |
 | Suggested chat models in the recipes | Gemma 4: 12B-it on 16 GB, E4B-it on 8 GB, E2B-it on CPU | Apache-2.0 with official GGUFs. Qwen3 is superseded by Qwen3.5, which has only community GGUFs at the sizes we need. |
 
-Versions at time of writing: Python 3.14.8, Starlette 1.7.0, uvicorn 0.54.0, httpx 0.28.1, Caddy 2.11.7, llama.cpp build b11433 (recipe and guard). Pinned versions go in `pyproject.toml`, `compose.yml` (images pinned by tag and digest) and the worker recipes. Upgrading means changing those pins in a release.
+Versions at time of writing: Python 3.14.8, Starlette 1.7.0, uvicorn 0.54.0, httpx 0.28.1, psycopg 3.3.6, psycopg-pool 3.3.3, PostgreSQL 18.6, Caddy 2.11.7, llama.cpp build b11433 (recipe and guard). Pinned versions go in `pyproject.toml`, `compose.yml` (images pinned by tag and digest) and the worker recipes. Upgrading means changing those pins in a release.
 
-Three runtime Python dependencies: starlette, uvicorn, httpx. Tests add pytest and pytest-asyncio.
+Five runtime Python dependencies: starlette, uvicorn, httpx, psycopg, psycopg-pool. Tests add pytest and pytest-asyncio.
 
 ## Repository layout
 
@@ -68,14 +70,14 @@ Dockerfile                app image
 pyproject.toml
 app/
   main.py                 routes and startup
-  db.py                   connection, migrations, queries
-  schema/001_init.sql     numbered SQL migrations
+  db.py                   Postgres connection pool, migrations, queries
+  schema/001_init.sql     numbered SQL migrations, recorded in schema_migrations
   auth.py                 staff login, student join, sessions, roles
   chat.py                 the turn pipeline: store, guard, route, stream
   guard.py                Qwen3Guard call, verdict parsing, category mapping
   workers.py              registry, heartbeat, routing
-  live.py                 in-process event bus for SSE
-  admin.py                backup, restore, retention, export, audit
+  live.py                 LISTEN/NOTIFY fan-out to SSE clients
+  admin.py                backup, restore (pg_dump, pg_restore), retention, export, audit
   static/                 student.html, teacher.html, admin.html, css, js
 worker/
   agent.py                auth proxy + heartbeat
@@ -91,9 +93,7 @@ LICENSES.md               every component and default model with its licence
 
 ### app
 
-One uvicorn process with one worker. The live event bus is in memory, so a second process would split it.
-
-ponytail: single process. If one process can't keep up with 30 students, move the event bus to SQLite polling or Redis first.
+uvicorn, one worker to start. Live events go through Postgres: the app issues `NOTIFY` on each stored message, flag, join and state change, and each process `LISTEN`s and fans the events out to its own SSE clients. A second process sees every event, so the app can add workers if one can't keep up.
 
 Three web surfaces, all served by the app:
 
@@ -188,7 +188,7 @@ Join codes can be guessed: 30 tries per minute per IP address on the join endpoi
 
 ## Data
 
-SQLite file in the `data` volume. Tables:
+PostgreSQL in the `db` service, data in the `pgdata` volume (ADR-0015). Credentials are in `.env`, generated at install. Tables:
 
 | Table | Holds |
 | --- | --- |
@@ -204,12 +204,13 @@ SQLite file in the `data` volume. Tables:
 | `models` | Model name, enabled. |
 | `settings` | Key/value: category actions, self-harm message, retention days (30), join token. |
 | `audit` | Who, what, when, for staff actions (R7.4). |
+| `schema_migrations` | Applied migration numbers and when. |
 
-Migrations are numbered SQL files applied at startup and recorded in `PRAGMA user_version`.
+Migrations are numbered SQL files in `app/schema/`, applied at startup and recorded in `schema_migrations`.
 
 Retention: an hourly task deletes conversations, messages and flags older than the retention setting, plus closed lesson sessions with no remaining messages (R7.2).
 
-Backup: `docker compose exec app python -m app.admin backup` writes a single `.db` file using SQLite's online backup API, so the app keeps running. Restore stops the app, replaces the file, and starts it again. The admin page offers the same backup as a download. Model weights are not in the backup; they download again.
+Backup: `docker compose exec db pg_dump -Fc` writes a custom-format dump while the app keeps running. Restore stops the app, empties the database, runs `pg_restore` into it, and starts the app again. The admin page download runs the same dump. Model weights are not in the backup; they download again.
 
 Export one student (R7.3): JSON of their conversations, messages and flags. Delete one student removes all of those rows. Both go in the audit log.
 
@@ -223,7 +224,7 @@ The console is a plain web page, but the PRD expects a non-technical teacher to 
 - Clicking a card opens the transcript beside the grid, with blocked messages and flag reasons shown inline and a "Mark reviewed" button.
 - Works on a laptop and an iPad. Keyboard accessible. Colour is never the only signal for a flag.
 
-Live view: the app publishes an event per stored message, flag, join and state change to the in-memory bus. Each teacher console holds one SSE connection filtered to its session. On reconnect it fetches current state over JSON, then resumes the stream.
+Live view: the app publishes an event per stored message, flag, join and state change with `NOTIFY`. Each app process `LISTEN`s and passes the events to its SSE clients. Each teacher console holds one SSE connection filtered to its session. On reconnect it fetches current state over JSON, then resumes the stream.
 
 ## Failure handling
 
@@ -233,7 +234,8 @@ Live view: the app publishes an event per stored message, flag, join and state c
 | Worker drops mid-reply | Partial reply stored and marked as an error. Student sees what was shown plus a retry message. |
 | Guard container down | Fail closed. Students see "chat is unavailable", and the teacher and admin consoles show a red banner. No unchecked text goes either way. |
 | Database write fails | The turn is refused. Nothing is sent to a model that isn't stored. |
-| Server restarts | Students and teachers stay signed in (cookies are in SQLite). Open SSE streams reconnect. |
+| Database down | Fail closed. Turns are refused, students see "chat is unavailable", and `/healthz` reports the database down. The app reconnects when it is back. |
+| Server restarts | Students and teachers stay signed in (cookies are in the database). Open SSE streams reconnect. |
 
 ## Network and TLS
 
@@ -245,7 +247,7 @@ Live view: the app publishes an event per stored message, flag, join and state c
 ## Tests
 
 - Unit tests with pytest for verdict parsing, category mapping, routing choice, rate limits, retention and migrations.
-- API tests drive the Starlette app in-process with httpx's ASGI transport against a temporary SQLite file. A fake worker and a fake guard are small Starlette apps that stream canned replies and verdicts, so tests need no models.
+- API tests drive the Starlette app in-process with httpx's ASGI transport against a real Postgres. The test session starts one Postgres container in Docker and creates a disposable database for each test run. There is no in-process database. A fake worker and a fake guard are small Starlette apps that stream canned replies and verdicts, so tests need no models.
 - One smoke test boots the real compose stack with an agent in front of a local model server running Gemma 4 E2B, joins a student, and checks a reply arrives and appears in the teacher stream. Run on demand on the Mac, not in every test run.
 - Guard check: a fixed list of test prompts per R6.3 category run against the real guard (acceptance 7), on demand.
 - Load test: `tests/load.py` simulates 30 students over the HTTP API and reports lost messages and time to first segment (acceptance 12). Run on the Windows GPU machine.
@@ -255,7 +257,8 @@ Live view: the app publishes an event per stored message, flag, join and state c
 
 - Logs: the app logs JSON lines to stdout. Docker keeps them. Chat text never goes to logs, only to the database.
 - Health: `/healthz` reports database, guard and worker counts. The admin page shows the same.
-- Upgrade: `git pull && docker compose up -d --build`. Migrations run on start. Back up first; the docs say so.
+- Upgrade: `git pull && docker compose up -d --build`. Migrations run on start. Back up first with `pg_dump`; the docs say so.
+- Postgres major upgrades are a dump and restore into the new version, done in a release with its own instructions.
 - No telemetry leaves the server.
 
 ## Decisions

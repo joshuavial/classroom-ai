@@ -8,20 +8,20 @@ Each step ends with passing tests and something you can run on the Mac. Steps ru
 
 Outcome: `docker compose up` on the Mac serves a page from the app, and `pytest` passes.
 
-- `pyproject.toml`, `Dockerfile`, `compose.yml` with caddy and app, `Caddyfile` (plain HTTP on localhost for now).
-- `app/main.py` with `/healthz`, `app/db.py` applying `schema/001_init.sql` with all tables from the architecture.
-- `tests/` with the ASGI test client fixture, the fake worker and the fake guard.
+- `pyproject.toml`, `Dockerfile`, `compose.yml` with caddy, app and db (official `postgres:18` image, named volume, internal network only, no published port), `Caddyfile` (plain HTTP on localhost for now). `.env` with generated database credentials.
+- `app/main.py` with `/healthz`, `app/db.py` with the psycopg async pool, applying `schema/001_init.sql` with all tables from the architecture and recording it in `schema_migrations`.
+- `tests/` with the test Postgres (one container in Docker for the test session, a disposable database per run), the ASGI test client fixture, the fake worker and the fake guard.
 - `LICENSES.md` started.
 
 Excludes: any feature.
 
-Checks: `pytest` green. `docker compose up` then `curl localhost/healthz` returns ok. A migration test applies the schema to an empty file and to an already-migrated one.
+Checks: `pytest` green. `docker compose up` then `curl localhost/healthz` returns ok. A migration test applies the schema to an empty database and to an already-migrated one.
 
 ## 1. Staff accounts (parallel with 2)
 
 Outcome: the tech teacher creates the admin account with the setup code and signs in. The admin creates a teacher account.
 
-- Setup code printed to the log on first start, setup page, login, logout, roles, CSRF, cookie sessions in SQLite.
+- Setup code printed to the log on first start, setup page, login, logout, roles, CSRF, cookie sessions in the database.
 - Bare `/admin` and `/teach` pages that need the right role.
 
 Requirements: R1.2, part of R7.4 (audit rows for account changes).
@@ -90,13 +90,13 @@ Depends on 5.
 
 Outcome: the teacher watches the class live, opens transcripts, reviews flags and sees the usage summary.
 
-- `live.py` event bus, SSE endpoint per lesson session, reconnect then resync.
+- `NOTIFY` on each stored message, flag, join and state change. `live.py` `LISTEN`s and fans out to the SSE endpoint per lesson session, reconnect then resync.
 - Teacher page as specified in the architecture's Teacher console section: session bar, card grid, usage strip, transcript panel, mark reviewed.
 - `docs/manual-tests.md` for the console on laptop and iPad.
 
 Requirements: R5.1-R5.5, R6.7, D1 usage summary, acceptance 3 (teacher side within five seconds), 9.
 
-Checks: API tests that a stored message, flag, join and state change each produce one event on the right session's stream and none on another. Manual tests file run on the Mac with two student devices.
+Checks: API tests that a stored message, flag, join and state change each produce one event on the right session's stream and none on another, including with two app processes. Manual tests file run on the Mac with two student devices.
 
 ## 7. Records and audit
 
@@ -106,7 +106,7 @@ Outcome: retention runs, one student can be exported and deleted, the whole serv
 
 - Hourly retention task, default 30 days (D2).
 - Student export (JSON) and delete.
-- `python -m app.admin backup|restore`, download from the admin page.
+- Backup with `pg_dump -Fc` through `docker compose exec db`. Restore with `pg_restore` into an emptied database, app stopped. Download from the admin page runs the same dump.
 - Audit rows for model changes, session state changes, flag reviews, exports and deletions. Admin page list.
 
 Requirements: R1.5, R7.1-R7.4, acceptance 10.
