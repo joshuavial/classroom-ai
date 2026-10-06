@@ -27,7 +27,9 @@ Everything runs inside the school. Once the models are downloaded, it works with
 
 The server and the GPU machines are separate on purpose, so a GPU machine doesn't have to be in the same building. A school with spare GPU capacity can join its machines to another school's server and give that school AI it couldn't otherwise run. Time zones help. A lab in New Zealand sits idle overnight while a school in Europe or the Americas is teaching, and the reverse.
 
-The school using the GPUs keeps its own server. Sign-in, records, safety checks and the teacher view stay with it. Only the model requests cross to the other school. Those requests carry what students type, so sharing needs a written agreement between the schools and an encrypted link. It is a later increment; the pilot keeps everything on one school's network.
+The architecture is designed for this. Each school's own server sits between its students and any GPU, so it can anonymise traffic before it leaves the school. Sign-in, names, records, safety checks and the teacher view stay on the school's server. The GPU machines at the other school see only the conversation text, with no student name, class or school attached. The server can also remove personal details a student types, such as names, phone numbers and addresses, before a request crosses over. The lending school sees nothing it could trace back to a child, and the borrowing school still has a full record of its own.
+
+Sharing still needs a written agreement between the schools and an encrypted link between the sites. It is a later increment; the pilot keeps everything on one school's network.
 
 ## Principles
 
@@ -55,7 +57,7 @@ The school using the GPUs keeps its own server. Sign-in, records, safety checks 
 - Teacher-built activities, such as a tutor set up for one assignment.
 - Measured sizing guides: how many students a given GPU can serve.
 - A transparency and consent pack schools can hand to parents and boards.
-- GPU sharing between schools over an encrypted link, with an agreement template.
+- GPU sharing between schools: anonymised requests, an encrypted link, and an agreement template.
 - Guard coverage for te reo Māori and other languages students use.
 
 ## Background

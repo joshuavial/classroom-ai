@@ -171,6 +171,7 @@ Join codes can be guessed: 30 tries per minute per IP address on the join endpoi
 - A heartbeat without the current token is rejected. A removed worker is put on a deny list by worker ID, so its heartbeats are rejected even with the token.
 - The server sends the worker's API key on every model request. A student device that reaches the worker port without the key is refused (acceptance 5). The network docs add a firewall rule allowing only the server's address.
 - Server-to-worker traffic is plain HTTP on the school LAN. Sharing GPUs between schools (vision, later increment) needs that link encrypted, for example a WireGuard tunnel between the sites. Nothing else in the design assumes the worker is on the same network.
+- Model requests already carry no identity: the app sends only the class instructions and the conversation text, never a student name, class name, school or user field. Keep it that way, because it is what lets a school's server anonymise traffic to another school's GPUs. Cross-school sharing adds a redaction step (for example Presidio) on requests bound for a remote worker.
 - A worker missing three heartbeats (45 seconds) is marked down and gets no requests (R2.4: within a minute). A request that fails to connect marks the worker down at once and retries on another worker serving the same model.
 
 ## Data
