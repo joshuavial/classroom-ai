@@ -2,6 +2,8 @@
 
 One file per decision, numbered in order. ADRs start as Proposed and can be rewritten freely until accepted. Once accepted, change a decision by adding a new ADR that supersedes it.
 
+Product decisions are recorded in the vision (project-wide) and in each PRD's Decisions section, not here.
+
 Template: copy any ADR and keep the headings (Context, Decision, Consequences).
 
 | ADR | Decision | Status |
@@ -15,7 +17,4 @@ Template: copy any ADR and keep the headings (Context, Decision, Consequences).
 | [0007](0007-any-openai-compatible-worker.md) | Any OpenAI-compatible worker | Proposed |
 | [0008](0008-cpu-guard-on-the-server.md) | Cpu guard on the server | Proposed |
 | [0009](0009-segmented-reply-checking.md) | Segmented reply checking | Proposed |
-| [0010](0010-six-digit-session-code.md) | Six digit session code | Proposed |
-| [0011](0011-flags-to-classroom-teacher-only.md) | Flags to classroom teacher only | Proposed |
-| [0012](0012-thirty-day-retention.md) | Thirty day retention | Proposed |
-| [0013](0013-anonymous-model-requests.md) | Anonymous model requests | Proposed |
+| [0010](0010-anonymous-model-requests.md) | Anonymous model requests | Proposed |

@@ -36,7 +36,7 @@ Sharing still needs a written agreement between the schools and an encrypted lin
 1. Open source throughout. OSI-licensed software and openly licensed models only, with no vendor accounts, subscriptions or telemetry sent home. A school can fork it and keep running it if this project stops.
 2. The school owns the data. Conversations stay on school hardware. The school decides how long to keep them and can delete them.
 3. Students know they are monitored. Every chat tells the student that their teacher can read it. The teacher's view is supervision of a learning tool, the same as walking around the lab.
-4. The teacher handles serious disclosures. Safety checks flag and block, and never counsel. A disclosure of self-harm is flagged to the classroom teacher, and the student sees a message the school wrote.
+4. Serious content goes to the teacher. Safety checks flag and block, and never counsel; the school writes what students see.
 5. One teacher can run it. Install, upgrade and adding a GPU each take one documented command. A tech teacher should be able to do each from the README alone.
 6. Small enough to audit. The code and storage are plain enough that a school IT person can read how it works in an afternoon.
 

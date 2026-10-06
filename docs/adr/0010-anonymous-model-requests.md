@@ -1,4 +1,4 @@
-# ADR-0013: Anonymous model requests
+# ADR-0010: Anonymous model requests
 
 Status: Proposed. Date: 2026-10-06.
 ## Context

@@ -51,6 +51,7 @@ This increment covers one school piloting with one class for one lesson.
 - R3.2 The teacher creates a class with a name and a set of instructions given to the AI for every conversation in that class (for example, "act as a tutor; guide, don't write the answer").
 - R3.3 The teacher gets students into a class in one of two ways: a class join code plus the student's name, or student accounts the admin creates in bulk from a list. (Open question Q1 decides which comes first.)
 - R3.4 The teacher can set a message limit per student per lesson.
+- R3.5 When starting a session, the teacher generates a batch of student codes (30 by default, the teacher can change the number) and can generate more during the session. The teacher prints them as an A4 page of cut-out slips, one code per slip, with the class name and the chat web address on each.
 
 ### 4. Student chats
 
@@ -58,8 +59,9 @@ This increment covers one school piloting with one class for one lesson.
 - R4.2 Before the first message, and visibly on every chat, the student is told that their teacher can read the conversation.
 - R4.3 The student picks from the models that are on, sends messages and sees the reply appear as it is written.
 - R4.4 The student can start a new conversation and see their own past conversations in this class.
-- R4.5 When a message is blocked, the student sees a plain explanation, not an error.
+- R4.5 When a message is blocked, the student sees the message set for that category, not an error.
 - R4.6 When the class is paused, students see that it is paused and can't send messages.
+- R4.7 The chat screen always shows the student's name and code in a header, so a teacher walking around can check the screen matches the slip and the student.
 
 ### 5. Teacher watches the lesson
 
@@ -73,9 +75,9 @@ This increment covers one school piloting with one class for one lesson.
 
 - R6.1 Every student message is checked before it reaches a model. Every reply is checked before the student sees it.
 - R6.2 The checks run on school hardware and keep working when no GPU machine is up.
-- R6.3 Categories at minimum: self-harm, sexual content, violence, hate and bullying, dangerous activities, attempts to bypass the rules (jailbreaks), and personal information.
+- R6.3 Categories are the categories the guard model provides; the admin chooses which to act on.
 - R6.4 For each category the admin chooses the action: allow and flag, block and flag, or block only.
-- R6.5 Self-harm always flags, and shows the student a message written by the school (with local helplines such as 1737 in New Zealand). No AI-generated reply is shown for it. The admin edits that message.
+- R6.5 For each category the admin can write the message the student sees when a message is blocked.
 - R6.6 Each flag records the category, the message, the time and the student.
 - R6.7 Flags go to the classroom teacher in the console, nowhere else. The teacher marks each one reviewed, and the product records who and when. Any follow-up after that is up to the teacher.
 
@@ -94,7 +96,7 @@ This increment covers one school piloting with one class for one lesson.
 4. Turning a model off removes it from student choice immediately; requests for it are refused.
 5. A request sent straight to a GPU machine from a student device fails when the documented network rules are applied.
 6. Stopping the GPU machine shows it as down within a minute; with a second machine offering the same model, students keep chatting.
-7. A message from each category in R6.3 triggers the configured action. A self-harm message shows the school's message, flags red in the console and stores the transcript.
+7. A test message for each enabled category triggers the configured action and shows the configured message.
 8. Unplugging the server's internet does not change any of the above.
 9. Pausing the class blocks new student messages until resumed.
 10. Backup, wipe and restore returns all settings and conversations.
@@ -137,10 +139,10 @@ None. All five are answered under Decisions.
 
 ## Decisions
 
-- D1 (Q1, 2026-10-06) Students join with a six-digit code plus their name. The teacher generates a fresh code when starting a session. The teacher opens and closes the chat for that session, and while it runs sees a summary of usage: who is active, message counts per student, models used and flags. Admin-created accounts are a later increment. This replaces the "one of two ways" in R3.3.
-- D2 (Q2, 2026-10-06) Conversations are kept 30 days by default. The admin can change it.
+- D1 (Q1, 2026-10-06, changed 2026-10-07) Each student gets their own code on a printed slip. Getting students in must take seconds and need no accounts. When starting a session the teacher generates a batch of codes (30 by default, adjustable, more on demand), each six digits and unique among open sessions, and prints them as slips (R3.5). Students pick up a slip at the front of the class and enter its code and their name. The first use binds the code to that student and name. Entering the same code again in the same session, after a closed tab or on another device, resumes as the same student with the same name. The student can't change the name after that; the teacher can rename a student or unbind and remove a code. The student's name and code stay on screen (R4.7), so the teacher can spot a screen that doesn't match the slip. The teacher console roster shows each code, whether it is used and the name bound to it. The teacher opens, pauses and closes the chat for that session, and while it runs sees a summary of usage: who is active, message counts per student, models used and flags. Closing the session invalidates all its codes. Code entry is rate limited per IP address, because the codes can be guessed. A student record lasts one session, so students can't see conversations from earlier lessons. Admin-created accounts are a later increment. This replaces the "one of two ways" in R3.3.
+- D2 (Q2, 2026-10-06) Conversations are kept 30 days by default. The admin can change it. Minors' chats should be kept no longer than needed, and one setting keeps the choice easy to reverse.
 - D3 (Q3, 2026-10-06) No pilot school yet. Expect Windows. The server and the GPU worker both run in Docker, so each machine needs only Docker Desktop; the worker container uses whatever GPU the host exposes to Docker. Build and drive it on a development Mac first, then test on a Windows test machine with an NVIDIA card.
 - D4 (Q4, 2026-10-06) No academic-integrity checks in this increment. It is a plain chatbot with the R6 safeguards; class instructions are the only steer. Integrity checks move to a later increment.
-- D6 (2026-10-07) Serious disclosures go to the classroom teacher only. No safeguarding contact or escalation path in the product.
+- D6 (2026-10-07) Flags go to the classroom teacher in the console only. No phone, push or email alerts, no safeguarding contact and no escalation path in the product. No category is singled out: each one has the action and message the admin sets. The teacher marks each flag reviewed, and follow-up is the teacher's call. This way flags reach a person without the product running notification infrastructure or owning an escalation process.
 - D5 (Q5, 2026-10-06) Keep the working name classroom-ai until a better one is chosen.
 - The teacher console for watching chats (journey 5) has to be pleasant for a non-technical teacher to use, not a bare admin table (2026-10-06).

@@ -76,7 +76,7 @@ app/
   schema/001_init.sql     numbered SQL migrations, recorded in schema_migrations
   auth.py                 staff login, student join, sessions, roles
   chat.py                 the turn pipeline: store, guard, route, stream
-  guard.py                Qwen3Guard call, verdict parsing, category mapping
+  guard.py                Qwen3Guard call, verdict parsing
   workers.py              registry, heartbeat, routing
   live.py                 LISTEN/NOTIFY fan-out to SSE clients
   admin.py                backup, restore (pg_dump, pg_restore), retention, export, audit
@@ -86,6 +86,7 @@ web/
   next.config.ts          output: "standalone"
   app/page.tsx            / student chat
   app/teach/page.tsx      /teach teacher console
+  app/teach/slips/page.tsx  /teach/slips printable code slips
   app/admin/page.tsx      /admin tech teacher
   lib/api.ts              JSON API calls with the CSRF header
   tests/                  Vitest and Testing Library component and page tests
@@ -112,9 +113,9 @@ The app serves only the JSON API under `/api/` and `/healthz`.
 
 The Next.js app in `web/` (ADR-0006). It holds no data and no secrets. Pages are client components that call the app's JSON API. Server-side rendering features stay minimal, and no server action talks to the database. Three web surfaces:
 
-- `/` student chat. Join, model picker, conversation list, chat.
-- `/teach` teacher console. Session controls, live class grid, transcripts, flags, usage summary.
-- `/admin` tech teacher. Workers and join command, models on/off, guard actions, self-harm message, retention, staff accounts, backup, audit log.
+- `/` student chat. Join, a header with the student's name and code, model picker, conversation list, chat.
+- `/teach` teacher console. Session controls, code roster, printable slips, live class grid, transcripts, flags, usage summary.
+- `/admin` tech teacher. Workers and join command, models on/off, category actions and messages, retention, staff accounts, backup, audit log.
 
 Live updates come from the app over Server-Sent Events, read in the browser with `EventSource`. SSE goes one way, works through Caddy with no extra configuration, and reconnects on its own.
 
@@ -148,7 +149,7 @@ Every student message goes through `chat.py`:
 
 1. Check the student's session is open, not paused, and under the message limit. Refuse if not.
 2. Store the message.
-3. Guard the prompt. Store the verdict. If the category action blocks, store the block, publish to the teacher, and return the block text: the school's message for self-harm, a plain explanation otherwise. Flag if the action flags.
+3. Guard the prompt. Store the verdict. If the category action blocks, store the block, publish to the teacher, and return the block text, which is the category's configured message. Flag if the action flags.
 4. Pick a live worker serving the chosen model with the most spare capacity (its `MAX_CONCURRENT` minus requests in flight). If none, return a "no model available" message and store that.
 5. Send the class instructions, the conversation so far and the message to the worker, streaming.
 6. Release the reply in segments. Buffer tokens to the end of a sentence or 300 characters, guard the reply so far together with the prompt, then send the segment to the student. If a segment trips the guard, stop the generation, store everything generated, and replace what follows with the block text. Text already shown stays shown, and the flag records that.
@@ -158,19 +159,7 @@ A turn is stored before anything leaves the server. A failure at any step is sto
 
 Step 6 is how R4.3 (streamed reply) and R6.1 (reply checked first) both hold. The cost is a guard call per segment on CPU. The load test (acceptance 12) measures it. If the guard is the bottleneck, segments get longer first, and the guard moves to a GPU worker only after that, keeping the CPU guard as the fallback for R6.2.
 
-Category mapping from Qwen3Guard to R6.3:
-
-| R6.3 category | Qwen3Guard category |
-| --- | --- |
-| Self-harm | Suicide & Self-Harm |
-| Sexual content | Sexual Content or Sexual Acts |
-| Violence | Violent |
-| Hate and bullying | Unethical Acts |
-| Dangerous activities | Non-violent Illegal Acts |
-| Jailbreak | Jailbreak (prompts only) |
-| Personal information | PII |
-
-Qwen3Guard's "Controversial" verdict counts as unsafe for students. Categories Qwen3Guard reports that are not in the table (politically sensitive, copyright) are stored and ignored.
+Categories come from the guard model, and each one is configured the same way: an action and a student-facing message, both set by the admin (R6.3-R6.5). Qwen3Guard's "Controversial" verdict counts as unsafe for students. Categories the admin does not act on are stored and ignored.
 
 ## Identity and access
 
@@ -182,15 +171,17 @@ Staff:
 
 Students (D1):
 
-- The teacher starts a lesson session for a class. The app generates a six-digit code, unique among open sessions.
-- A student enters the code and a display name. The app creates a student record for that session and sets a session cookie.
-- The teacher sees each name appear on the class grid and can rename or remove a student. A removed student's cookie stops working.
-- Opening and closing: a session is `open`, `paused` or `closed`. Pause keeps students signed in but stops sending (R4.6). Close ends the session, the code stops working and student cookies expire. A closed session's transcripts stay readable by the teacher.
+- The teacher starts a lesson session for a class and generates a batch of student codes, 30 by default. Each code is six digits, unique among open sessions, and stored as an unbound `students` row. The teacher can generate more during the session.
+- "Print slips" opens `/teach/slips`, a print-friendly page that lays the unused codes out as A4 cut-out slips, one per slip, with the class name and the chat web address on each. The browser prints it with print CSS; there is no PDF library.
+- A student enters a code and a name. If the code is unbound, the app binds it to that name, records the time and sets a session cookie. If the code is already bound, the app signs the device in as that student under the bound name and ignores the name typed. That is how a student resumes after closing the tab or on another device.
+- The student can't change the bound name. The teacher can rename a student, unbind a code or remove it. Unbinding marks the student removed and adds a fresh unbound row with the same code, so earlier conversations stay with the old name. Removing retires the code. Either way the old cookies stop working.
+- Every student page shows the bound name and code in a header that stays visible (R4.7).
+- Opening and closing: a session is `open`, `paused` or `closed`. Pause keeps students signed in but stops sending (R4.6). Close ends the session, all its codes stop working and student cookies expire. A closed session's transcripts stay readable by the teacher.
 - A student record lasts one session. "Past conversations in this class" (R4.4) means past conversations in this session. Linking a student across lessons needs accounts, which are a later increment.
 
 Cookies: random 32-byte tokens stored in a `auth_sessions` table, `HttpOnly`, `Secure`, `SameSite=Lax`. Every state-changing request needs the cookie and a matching CSRF header from the page.
 
-Join codes can be guessed: 30 tries per minute per IP address on the join endpoint. Six digits against a handful of open sessions makes guessing slow enough.
+Student codes can be guessed: 30 tries per minute per IP address on the join endpoint. With 30 codes open, one address needs around 18 hours on average to hit one. A guessed bound code shows the real student's name and code in the header, so the teacher can spot it.
 
 ## Worker trust
 
@@ -198,7 +189,7 @@ Join codes can be guessed: 30 tries per minute per IP address on the join endpoi
 - A heartbeat without the current token is rejected. A removed worker is put on a deny list by worker ID, so its heartbeats are rejected even with the token.
 - The server sends the worker's API key on every model request. A student device that reaches the agent's port without the key is refused, and the model server itself is not on the LAN (acceptance 5). The network docs add a firewall rule allowing only the server's address.
 - Server-to-worker traffic is plain HTTP on the school LAN. Sharing GPUs between schools (vision, later increment) needs that link encrypted, for example a WireGuard tunnel between the sites. Nothing else in the design assumes the worker is on the same network.
-- Model requests already carry no identity: the app sends only the class instructions and the conversation text, never a student name, class name, school or user field. Keep it that way, because it is what lets a school's server anonymise traffic to another school's GPUs. Cross-school sharing adds a redaction step (for example Presidio) on requests bound for a remote worker.
+- Model requests already carry no identity (ADR-0010): the app sends only the class instructions and the conversation text, never a student name, class name, school or user field. Keep it that way, because it is what lets a school's server anonymise traffic to another school's GPUs. Cross-school sharing adds a redaction step (for example Presidio) on requests bound for a remote worker.
 - A worker missing three heartbeats (45 seconds) is marked down and gets no requests (R2.4: within a minute). A request that fails to connect marks the worker down at once and retries on another worker serving the same model.
 
 ## Data
@@ -210,14 +201,14 @@ PostgreSQL in the `db` service, data in the `pgdata` volume (ADR-0005). Credenti
 | `staff` | Staff accounts and roles. |
 | `auth_sessions` | Cookie tokens for staff and students. |
 | `classes` | Name, instructions (system prompt), message limit, owning teacher. |
-| `lesson_sessions` | Class, join code, state, opened and closed times. |
-| `students` | Display name, lesson session, removed flag. |
+| `lesson_sessions` | Class, state, opened and closed times. |
+| `students` | Lesson session, code, bound name, bound at (empty until first use), removed flag. |
 | `conversations` | Student, model, started time. |
 | `messages` | Conversation, role, text, time, status (ok, blocked, error), worker used. |
 | `flags` | Message, category, action taken, reviewed by, reviewed at. |
 | `workers` | ID, address, API key, models, capacity, last heartbeat, removed. |
 | `models` | Model name, enabled. |
-| `settings` | Key/value: category actions, self-harm message, retention days (30), join token. |
+| `settings` | Key/value: category actions and messages, retention days (30), join token. |
 | `audit` | Who, what, when, for staff actions (R7.4). |
 | `schema_migrations` | Applied migration numbers and when. |
 
@@ -233,8 +224,9 @@ Export one student (R7.3): JSON of their conversations, messages and flags. Dele
 
 The console is a plain web page, but the PRD expects a non-technical teacher to enjoy using it. Requirements on the front end:
 
-- A session bar at the top: class name, the join code in large type, open/pause/close buttons, time since start.
-- A grid of student cards: name, latest message, message count, a red border and badge when flagged. Cards update over SSE without the page jumping.
+- A session bar at the top: class name, open/pause/close buttons, time since start, a "Print slips" button and a control to generate more codes.
+- A roster of codes: each code, whether it is used and the name bound to it, with rename, unbind and remove.
+- A grid of student cards: name and code, latest message, message count, a red border and badge when flagged. Cards update over SSE without the page jumping.
 - A usage strip (D1): students active in the last five minutes, total messages, messages per student, model use, flags by category.
 - Clicking a card opens the transcript beside the grid, with blocked messages and flag reasons shown inline and a "Mark reviewed" button.
 - Works on a laptop and an iPad. Keyboard accessible. Colour is never the only signal for a flag.
@@ -262,10 +254,10 @@ Live view: the app publishes an event per stored message, flag, join and state c
 
 ## Tests
 
-- Unit tests with pytest for verdict parsing, category mapping, routing choice, rate limits, retention and migrations.
+- Unit tests with pytest for verdict parsing, routing choice, rate limits, retention and migrations.
 - API tests drive the Starlette app in-process with httpx's ASGI transport against a real Postgres. The test session starts one Postgres container in Docker and creates a disposable database for each test run. There is no in-process database. A fake worker and a fake guard are small Starlette apps that stream canned replies and verdicts, so tests need no models.
 - One smoke test boots the real compose stack with an agent in front of a local model server running Gemma 4 E2B, joins a student, and checks a reply arrives and appears in the teacher stream. Run on demand on the Mac, not in every test run.
-- Guard check: a fixed list of test prompts per R6.3 category run against the real guard (acceptance 7), on demand.
+- Guard check: a fixed list of test prompts per enabled category run against the real guard (acceptance 7), on demand.
 - Load test: `tests/load.py` simulates 30 students over the HTTP API and reports lost messages and time to first segment (acceptance 12). Run on the Windows GPU machine.
 - Front end: component and page tests with Vitest and Testing Library, with the API mocked. A Playwright smoke in `web/e2e/` runs against the compose stack with the fake worker and fake guard: a student joins and chats, and the teacher sees it. Devices are still checked by hand against `docs/manual-tests.md` on a phone, a tablet and a laptop.
 
@@ -279,4 +271,4 @@ Live view: the app publishes an event per stored message, flag, join and state c
 
 ## Decisions
 
-Recorded one per file in the ADR register, `docs/adr/README.md`. Add an ADR for any new decision or change to one.
+Recorded one per file in the ADR register, `docs/adr/README.md`. Add an ADR for any new decision or change to one. Product decisions are in the PRD's Decisions section: student codes (D1), retention (D2) and flags (D6).

@@ -45,15 +45,17 @@ Checks: unit tests for routing and down-detection with a fake clock. API tests f
 
 Depends on 1.
 
-Outcome: a teacher creates a class with instructions and a message limit, starts a session, sees a six-digit code, and students join with code and name.
+Outcome: a teacher creates a class with instructions and a message limit, starts a session, generates and prints code slips, and students join with their slip's code and their name.
 
-- Class create and edit. Start session, open, pause, close. Join endpoint with per-IP rate limit. Student cookie. Rename and remove student.
-- Teacher page in `web/`: session bar with the code, roster list (manual refresh for now).
-- Student page in `web/`: join form.
+- Class create and edit. Start session, open, pause, close. Generate a batch of codes (default 30, number set by the teacher) and more during the session.
+- Join endpoint with per-IP rate limit. First use of a code binds it to the name entered. Entering a bound code again resumes as that student under the bound name. Student cookie. Rename, unbind and remove.
+- Teacher page in `web/`: session bar with "Print slips" and generate more, roster of codes with used or not and bound name (manual refresh for now).
+- `/teach/slips` in `web/`: print-friendly A4 page of cut-out slips, one code per slip, with the class name and the chat web address. Print CSS only, no PDF library.
+- Student page in `web/`: join form, and a header with the student's name and code on every page.
 
-Requirements: R3.2, R3.3 as decided in D1, R3.4 (limit stored), R4.6, R5.4.
+Requirements: R3.2, R3.3 as decided in D1, R3.4 (limit stored), R3.5, R4.6, R4.7, R5.4.
 
-Checks: API tests for code uniqueness among open sessions, join to a closed session refused, removed student's cookie refused, rate limit, pause blocks sending.
+Checks: API tests for code uniqueness among open sessions, single-use binding (a second name on a bound code gets the bound name), resume on a second device with the same code, closing the session invalidates all its codes and cookies, unbound and removed students' cookies refused, rate limit, pause blocks sending. Vitest tests for the slips page and the name and code header.
 
 ## 4. Student chat, unguarded behind a feature flag
 
@@ -75,15 +77,15 @@ Depends on 4.
 
 Outcome: every prompt and reply segment is checked by Qwen3Guard on CPU, and the configured action happens.
 
-- `guard` service in `compose.yml` with the weights in a volume. `guard.py` prompt format, parsing, category mapping, Controversial as unsafe.
+- `guard` service in `compose.yml` with the weights in a volume. `guard.py` prompt format, parsing, Controversial as unsafe.
 - Pipeline steps 3 and 6: prompt check, segmented reply release, stop on a tripped segment.
-- Admin page section in `web/`: action per category and the self-harm message (default text with NZ helplines), both editable.
+- Admin page section in `web/`: for each category the guard model provides, an action and the student-facing message, both editable.
 - Fail closed when the guard is down. Remove `GUARD_DISABLED`.
-- `tests/guard_prompts.py`: test prompts per R6.3 category, run on demand against the real guard.
+- `tests/guard_prompts.py`: test prompts per category, run on demand against the real guard.
 
 Requirements: R4.5, R6.1-R6.6.
 
-Checks: unit tests for parsing every verdict shape. API tests for saving the settings, and with the fake guard for each action (allow+flag, block+flag, block), self-harm static message with no model reply, a reply segment tripping mid-stream, guard down. On demand: the category prompt run against the real guard, results recorded in `docs/guard-results.md`.
+Checks: unit tests for parsing every verdict shape. API tests for saving the settings, and with the fake guard for each action (allow+flag, block+flag, block), a block with the configured message shown and no model reply, a reply segment tripping mid-stream, guard down. On demand: the category prompt run against the real guard, results recorded in `docs/guard-results.md`.
 
 ## 6. Teacher console, live
 

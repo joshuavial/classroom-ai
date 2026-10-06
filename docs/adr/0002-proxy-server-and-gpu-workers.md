@@ -11,4 +11,4 @@ One server in a Docker stack handles sign-in, logging, guards, the student chat 
 
 ## Consequences
 
-Adding a GPU is one command on that machine. Workers need not be on the same network, which leaves room for sharing GPUs between schools (ADR-0013).
+Adding a GPU is one command on that machine. Workers need not be on the same network, which leaves room for sharing GPUs between schools (ADR-0010).
