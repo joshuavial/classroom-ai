@@ -6,3 +6,10 @@ Working name. The project is at the planning stage and has no code yet.
 
 - [Vision](docs/vision.md): why this exists, who it is for and the principles behind it.
 - [PRD 00: Lab pilot](docs/prd-00-lab-pilot.md): the first increment, one class piloting it for one lesson.
+- [Architecture](docs/architecture.md) and [decision records](docs/adr/README.md): how it will be built.
+- [Implementation plan](docs/implementation-plan.md): the ordered build steps for the lab pilot.
+- [Research](docs/research/summary.md): the evidence behind these choices.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
