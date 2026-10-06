@@ -248,12 +248,4 @@ Live view: the app publishes an event per stored message, flag, join and state c
 
 ## Decisions
 
-| Decision | Chosen | Over | Because |
-| --- | --- | --- | --- |
-| Gateway | Own app | LiteLLM | Routing plus guard hooks are a few hundred lines here. LiteLLM's needed features are partly enterprise-only, and its PyPI package was trojaned in March 2026. |
-| Monitoring | SQLite + SSE page | Langfuse | Langfuse is six services and 16 GiB of RAM, with no classroom view. |
-| Chat UI | Own pages | Open WebUI, LibreChat | Open WebUI is non-OSI from v0.6.6. LibreChat has no live teacher view and needs MongoDB. |
-| Worker registry | Heartbeat to the app | Static config | The teacher adds a machine without editing files (R2.1-R2.2). |
-| Reply checking | Segment-by-segment before release | Check after full reply | Keeps streaming (R4.3) without unchecked text (R6.1). |
-| Student identity | Per-session record from a code and name | Accounts | D1. |
-| Front end | No-build static files | React/Vue | Auditable, no toolchain, enough for three pages. |
+Recorded one per file in the ADR register, `docs/adr/README.md`. Add an ADR for any new decision or change to one.
