@@ -1,0 +1,163 @@
+# Implementation plan: PRD 00 lab pilot
+
+Status: proposed, 2026-10-06. Built against `prd-00-lab-pilot.md` and `architecture.md`.
+
+Each step ends with passing tests and something you can run on the Mac. Steps run in order unless marked parallel. "Fake worker" and "fake guard" are the test doubles described in the architecture's Tests section.
+
+## 0. Scaffold
+
+Outcome: `docker compose up` on the Mac serves a page from the app, and `pytest` passes.
+
+- `pyproject.toml`, `Dockerfile`, `compose.yml` with caddy and app, `Caddyfile` (plain HTTP on localhost for now).
+- `app/main.py` with `/healthz`, `app/db.py` applying `schema/001_init.sql` with all tables from the architecture.
+- `tests/` with the ASGI test client fixture, the fake worker and the fake guard.
+- `LICENSES.md` started.
+
+Excludes: any feature.
+
+Checks: `pytest` green. `docker compose up` then `curl localhost/healthz` returns ok. A migration test applies the schema to an empty file and to an already-migrated one.
+
+## 1. Staff accounts (parallel with 2)
+
+Outcome: the tech teacher creates the admin account with the setup code and signs in. The admin creates a teacher account.
+
+- Setup code printed to the log on first start, setup page, login, logout, roles, CSRF, cookie sessions in SQLite.
+- Bare `/admin` and `/teach` pages that need the right role.
+
+Requirements: R1.2, part of R7.4 (audit rows for account changes).
+
+Checks: API tests for setup-once, wrong code, login, role enforcement, CSRF rejection, audit rows.
+
+## 2. Worker registry and the worker stack (parallel with 1)
+
+Outcome: on the Mac, `worker/compose.yml` with the CPU profile starts llama-server with Gemma 4 E2B and an agent, and the worker shows up in the app.
+
+- `worker/compose.yml` (cpu and nvidia profiles), `worker/agent.py`.
+- `/api/workers/heartbeat` with join token, deny list, down after 45 s, least-busy routing function, model list built from heartbeats, models on/off.
+- Admin page section: join token and command (bash and PowerShell), worker list with status, models and free slots, remove worker, rotate token, model toggles.
+
+Requirements: R2.1-R2.5, R3.1.
+
+Checks: unit tests for routing and down-detection with a fake clock. API tests for token rejection, removed worker rejection, model toggle. Manual: start the worker stack on the Mac and see it go up, stop it and see it go down within a minute.
+
+## 3. Classes and lesson sessions
+
+Depends on 1.
+
+Outcome: a teacher creates a class with instructions and a message limit, starts a session, sees a six-digit code, and students join with code and name.
+
+- Class create and edit. Start session, open, pause, close. Join endpoint with per-IP rate limit. Student cookie. Rename and remove student.
+- Teacher page: session bar with the code, roster list (static refresh for now).
+- Student page: join form.
+
+Requirements: R3.2, R3.3 as decided in D1, R3.4 (limit stored), R4.6, R5.4.
+
+Checks: API tests for code uniqueness among open sessions, join to a closed session refused, removed student's cookie refused, rate limit, pause blocks sending.
+
+## 4. Student chat, unguarded behind a feature flag
+
+Depends on 2 and 3.
+
+Outcome: a student on a phone and a laptop each pick a model and get a streamed reply from the Mac worker. Everything is stored.
+
+- `chat.py` pipeline steps 1, 2, 4, 5 and 7. Message limit enforced. Retry on another worker when one fails.
+- Student page: the monitoring notice before the first message and on every chat, model picker showing enabled models only, streaming reply, new conversation, list of this session's conversations. Accessible markup.
+- The guard step is a pass-through that fails closed unless `GUARD_DISABLED=1`, which only the test settings and this step's manual run use.
+
+Requirements: R4.1-R4.4, acceptance 3 (minus the teacher side), 4, 6.
+
+Checks: API tests with the fake worker for streaming, storage before send, disabled model refused, limit reached, worker failover, worker drop mid-reply stored as error. Manual: phone and laptop on the Mac's LAN address.
+
+## 5. Guard
+
+Depends on 4.
+
+Outcome: every prompt and reply segment is checked by Qwen3Guard on CPU, and the configured action happens.
+
+- `guard` service in `compose.yml` with the weights in a volume. `guard.py` prompt format, parsing, category mapping, Controversial as unsafe.
+- Pipeline steps 3 and 6: prompt check, segmented reply release, stop on a tripped segment.
+- Default category actions and the default self-harm message (NZ helplines) in settings.
+- Fail closed when the guard is down. Remove `GUARD_DISABLED`.
+- `tests/guard_prompts.py`: test prompts per R6.3 category, run on demand against the real guard.
+
+Requirements: R4.5, R6.1-R6.6.
+
+Checks: unit tests for parsing every verdict shape. API tests with the fake guard for each action (allow+flag, block+flag, block), self-harm static message with no model reply, a reply segment tripping mid-stream, guard down. On demand: the category prompt run against the real guard, results recorded in `docs/guard-results.md`.
+
+## 6. Teacher console, live
+
+Depends on 5.
+
+Outcome: the teacher watches the class live, opens transcripts, reviews flags and sees the usage summary.
+
+- `live.py` event bus, SSE endpoint per lesson session, reconnect then resync.
+- Teacher page as specified in the architecture's Teacher console section: session bar, card grid, usage strip, transcript panel, mark reviewed, safeguarding contact shown on self-harm flags.
+- `docs/manual-tests.md` for the console on laptop and iPad.
+
+Requirements: R5.1-R5.5, R6.7, D1 usage summary, acceptance 3 (teacher side within five seconds), 9.
+
+Checks: API tests that a stored message, flag, join and state change each produce one event on the right session's stream and none on another. Manual tests file run on the Mac with two student devices.
+
+## 7. Admin settings and audit (parallel with 8)
+
+Depends on 5.
+
+Outcome: the admin sets category actions, edits the safeguarding message and contact, manages staff, and reads the audit log.
+
+Requirements: R6.4, R6.5 (editing), R6.7 (contact), R7.4.
+
+Checks: API tests for each setting and that each staff action writes one audit row.
+
+## 8. Records (parallel with 7)
+
+Depends on 4.
+
+Outcome: retention runs, one student can be exported and deleted, and the whole server can be backed up and restored.
+
+- Hourly retention task, default 30 days (D2).
+- Student export (JSON) and delete.
+- `python -m app.admin backup|restore`, download from the admin page.
+
+Requirements: R1.5, R7.1-R7.3, acceptance 10.
+
+Checks: retention test with a fake clock. Export contents test. Backup, wipe, restore round trip test on a populated database.
+
+## 9. Install, TLS and Windows
+
+Depends on 6, 7 and 8.
+
+Outcome: someone new follows the README and gets the server running and a worker joined on Windows with an NVIDIA card.
+
+- Caddy `tls internal` with `SERVER_NAME`, root certificate download on the admin page.
+- `README.md` quick start. `docs/install.md`: server install, worker join on Windows (PowerShell) and Mac, trusting the certificate per device, firewall rule so only the server reaches workers, upgrade, backup.
+- `LICENSES.md` complete, including default models.
+- Run on JV's Windows machine: acceptance 1, 2, 5, 8.
+
+Requirements: R1.1, R1.3, R1.4, R1.6, R2.6, acceptance 1, 2, 5, 8, 11.
+
+Checks: JV's Windows run against the acceptance list, recorded in `docs/pilot-checks.md`. Upgrade from the previous commit keeps data.
+
+## 10. Load test
+
+Depends on 9.
+
+Outcome: measured capacity for 30 students on the Windows GPU.
+
+- `tests/load.py`: 30 simulated students, realistic message pacing, counts lost and unrecorded messages, reports time to first segment and guard latency.
+- Publish the numbers in `docs/capacity.md`. If time to first segment is far over five seconds, try longer guard segments and more llama-server slots, and record each result.
+
+Requirements: acceptance 12, PRD outcome on reply time.
+
+## Order and parallel work
+
+```
+0 -> 1 -> 3 -> 4 -> 5 -> 6 -> 9 -> 10
+0 -> 2 ------^         \-> 7 -^
+                 4 -> 8 ------^
+```
+
+Lanes: 1 and 2 run together after 0. 7 and 8 run together after 5 (8 can start after 4). Everything else is sequential because each step builds on the one before.
+
+## Not in this plan
+
+Everything in the PRD's non-goals, plus: published container images, academic-integrity checks (D4), student accounts across sessions (D1), Granite Guardian second-pass checks, Presidio redaction.

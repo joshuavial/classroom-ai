@@ -4,11 +4,13 @@ Working name: classroom-ai. The real name is still to be chosen.
 
 ## Why
 
-Students are going to use AI whether schools plan for it or not. The tools they reach for are cloud products the school does not control. Those products send children's words to companies overseas and show the teacher nothing. Many schools can't use them at all: in New Zealand, personal information of under-13s can't go to an AI tool, and paid classroom AI products charge every year.
+This project exists to give schools free, local and fully private AI. Everything runs on hardware the school already owns, nothing leaves the building, and there is nothing to pay for. It comes as a technical package that the school's IT staff and tech teachers can read, audit and understand.
 
-Many schools already own the hardware to run AI themselves. Computer labs, media rooms and esports clubs have gaming GPUs that sit idle most of the day. Open models that run on a 16 GB card can tutor a teenager through algebra or explain a poem.
+Schools that want AI today mostly get cloud products. Those send students' words to companies overseas and charge every year. Many schools can't use them at all: in New Zealand, personal information of under-13s can't go to an AI tool.
 
-No open-source project gives a school tech teacher student chat, a live teacher view and local safety checks in a form one person can install and look after. The closest open project, telli, is built for cloud models. The products with these features (SchoolAI, MagicSchool, Flint, Khanmigo) are paid cloud services.
+Many schools already have the hardware to do it themselves. Computer labs, media rooms and esports clubs have gaming GPUs that sit idle most of the day. Open models that run on a 16 GB card can tutor a teenager through algebra or explain a poem.
+
+No open-source project packages this for schools. The closest, telli, is built for cloud models. The products that give teachers a view of student chats and run safety checks (SchoolAI, MagicSchool, Flint, Khanmigo) are paid cloud services.
 
 ## What it is
 
@@ -20,6 +22,12 @@ A free, open-source kit that turns a school's own GPUs into a private AI service
 - The teacher decides which models students can use, what the AI is told to do (for example, tutor without writing the homework), and what happens when a safety check trips.
 
 Everything runs inside the school. Once the models are downloaded, it works with the internet unplugged.
+
+## Sharing GPUs between schools
+
+The server and the GPU machines are separate on purpose, so a GPU machine doesn't have to be in the same building. A school with spare GPU capacity can join its machines to another school's server and give that school AI it couldn't otherwise run. Time zones help. A lab in New Zealand sits idle overnight while a school in Europe or the Americas is teaching, and the reverse.
+
+The school using the GPUs keeps its own server. Sign-in, records, safety checks and the teacher view stay with it. Only the model requests cross to the other school. Those requests carry what students type, so sharing needs a written agreement between the schools and an encrypted link. It is a later increment; the pilot keeps everything on one school's network.
 
 ## Principles
 
@@ -47,6 +55,7 @@ Everything runs inside the school. Once the models are downloaded, it works with
 - Teacher-built activities, such as a tutor set up for one assignment.
 - Measured sizing guides: how many students a given GPU can serve.
 - A transparency and consent pack schools can hand to parents and boards.
+- GPU sharing between schools over an encrypted link, with an agreement template.
 - Guard coverage for te reo Māori and other languages students use.
 
 ## Background

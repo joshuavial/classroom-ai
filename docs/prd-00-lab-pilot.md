@@ -121,7 +121,7 @@ This increment covers one school piloting with one class for one lesson.
 - A3 One teacher runs one class at a time for the pilot. Several classes can exist, but the pilot only needs one live.
 - A4 English first. Guard accuracy in te reo Māori and other languages is untested.
 - A5 The school has a safeguarding contact and an acceptable-use policy that covers AI.
-- A6 Default models follow the research: a small open guard model for checks, and an 8B-class open chat model on a 16 GB card.
+- A6 Default models follow the research: a small open guard model for checks, and an open chat model sized to the card (see architecture.md).
 
 ## Risks
 
@@ -134,8 +134,13 @@ This increment covers one school piloting with one class for one lesson.
 
 ## Open questions
 
-- Q1 Student entry: class join code plus name (fast, no accounts, but anyone with the code can join under any name) or admin-created accounts (slower setup, real identity)? Pilot needs one; which first?
-- Q2 Default retention period for conversations.
-- Q3 Pilot school and hardware: which GPUs and how many, which network constraints?
-- Q4 Should academic-integrity checks ("write my essay") be a flag category in this increment, or handled only through class instructions?
-- Q5 Project name.
+None. All five are answered under Decisions.
+
+## Decisions
+
+- D1 (Q1, JV 2026-10-06) Students join with a six-digit code plus their name. The teacher generates a fresh code when starting a session. The teacher opens and closes the chat for that session, and while it runs sees a summary of usage: who is active, message counts per student, models used and flags. Admin-created accounts are a later increment. This replaces the "one of two ways" in R3.3.
+- D2 (Q2, JV 2026-10-06) Conversations are kept 30 days by default. The admin can change it.
+- D3 (Q3, JV 2026-10-06) No pilot school yet. Expect Windows. The server and the GPU worker both run in Docker, so each machine needs only Docker Desktop; the worker container uses whatever GPU the host exposes to Docker. Build and drive it on JV's Mac first, then test on his Windows machine with an NVIDIA card.
+- D4 (Q4, JV 2026-10-06) No academic-integrity checks in this increment. It is a plain chatbot with the R6 safeguards; class instructions are the only steer. Integrity checks move to a later increment.
+- D5 (Q5, JV 2026-10-06) Keep the working name classroom-ai until a better one is chosen.
+- The teacher console for watching chats (journey 5) has to be pleasant for a non-technical teacher to use, not a bare admin table (JV 2026-10-06).
