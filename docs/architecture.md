@@ -20,9 +20,9 @@ student browsers (phone, tablet, Chromebook, lab PC)      teacher browser
         v                                                        v
 +-------------------- server: compose.yml ------------------------+
 | caddy      TLS, the only published ports (443, 80 -> 443)        |
-| app        Python: student chat, teacher console, admin,         |
-|            auth, logging, guard pipeline, worker registry,       |
-|            routing to workers.                                   |
+| web        Next.js: student chat, teacher console, admin.        |
+| app        Python API and gateway: auth, logging, guard          |
+|            pipeline, worker registry, routing to workers, SSE.   |
 | db         postgres, data in a volume. Internal network only.    |
 | guard      llama-server on CPU, Qwen3Guard-Gen-0.6B. Internal    |
 |            network only.                                         |
@@ -46,27 +46,29 @@ Two compose files, one per machine role. Both build from this repository, so ins
 | Part | Choice | Why |
 | --- | --- | --- |
 | App language | Python 3.14 | Readable by a school IT person. Mature async HTTP. |
-| Web framework | Starlette + uvicorn | Routing, SSE streaming and static files with few dependencies. FastAPI adds validation and docs we do not need. |
+| Web framework | Starlette + uvicorn | Routing and SSE streaming with few dependencies. FastAPI adds validation and docs we do not need. |
 | Outbound HTTP | httpx | Async streaming to workers. |
 | Database | PostgreSQL 18, official `postgres` image (ADR-0015) | Several app processes can share it. `LISTEN`/`NOTIFY` carries live updates. Easy to query for reports. |
 | Database driver | psycopg 3 with `psycopg-pool` (async pool) | LGPL-3.0. Plain SQL, no ORM. |
 | Password hashing | stdlib `hashlib.scrypt` | No extra dependency. |
-| Front end | Plain HTML, CSS and JavaScript ES modules, served as static files. No build step. | Anyone can read and change it. No Node toolchain in the image. |
+| Front end | Next.js (App Router, TypeScript) with React and plain CSS modules, built with `output: "standalone"` and run on Node.js 24 LTS in its own `web` image (ADR-0016) | Easier to build a pleasant teacher console, with component tests. MIT licensed. Holds no data and no secrets. |
 | TLS | Caddy 2.11 with `tls internal` | Automatic local certificate authority, no internet needed. |
 | Model server on workers | Any OpenAI-compatible server (ADR-0014). Documented recipes: llama.cpp `llama-server` in Docker, and Ollama installed natively | The school runs GPUs however suits its machines. The agent gives every backend the same interface and the same auth. |
 | Guard model | Qwen3Guard-Gen-0.6B, community GGUF `mradermacher/Qwen3Guard-Gen-0.6B-GGUF` Q8_0, pinned by file hash, on a CPU llama-server | Apache-2.0, small enough for CPU, covers the R6.3 categories. Qwen publishes no GGUF, so the hash pin is how we know which weights we run. |
 | Suggested chat models in the recipes | Gemma 4: 12B-it on 16 GB, E4B-it on 8 GB, E2B-it on CPU | Apache-2.0 with official GGUFs. Qwen3 is superseded by Qwen3.5, which has only community GGUFs at the sizes we need. |
 
-Versions at time of writing: Python 3.14.8, Starlette 1.7.0, uvicorn 0.54.0, httpx 0.28.1, psycopg 3.3.6, psycopg-pool 3.3.3, PostgreSQL 18.6, Caddy 2.11.7, llama.cpp build b11433 (recipe and guard). Pinned versions go in `pyproject.toml`, `compose.yml` (images pinned by tag and digest) and the worker recipes. Upgrading means changing those pins in a release.
+Versions at time of writing: Python 3.14.8, Starlette 1.7.0, uvicorn 0.54.0, httpx 0.28.1, psycopg 3.3.6, psycopg-pool 3.3.3, PostgreSQL 18.6, Caddy 2.11.7, llama.cpp build b11433 (recipe and guard), Node.js 24.21.0, Next.js 16.4.0, React 19.3.0, TypeScript 7.0.2, Vitest 5.0.3, Playwright 1.63.0. Node.js 26 enters LTS on 2026-10-28; move to it in a release after that. Pinned versions go in `pyproject.toml`, `web/package.json` with its lockfile, `compose.yml` (images pinned by tag and digest) and the worker recipes. Upgrading means changing those pins in a release.
 
 Five runtime Python dependencies: starlette, uvicorn, httpx, psycopg, psycopg-pool. Tests add pytest and pytest-asyncio.
+
+Three runtime Node dependencies for `web`: next, react, react-dom. Development adds TypeScript, Vitest, Testing Library and Playwright.
 
 ## Repository layout
 
 ```
 compose.yml               server stack
 Caddyfile
-Dockerfile                app image
+Dockerfile                app image (Python API)
 pyproject.toml
 app/
   main.py                 routes and startup
@@ -78,7 +80,16 @@ app/
   workers.py              registry, heartbeat, routing
   live.py                 LISTEN/NOTIFY fan-out to SSE clients
   admin.py                backup, restore (pg_dump, pg_restore), retention, export, audit
-  static/                 student.html, teacher.html, admin.html, css, js
+web/
+  Dockerfile              web image, Next.js standalone output on Node
+  package.json            pinned Next.js, React and test tools, with lockfile
+  next.config.ts          output: "standalone"
+  app/page.tsx            / student chat
+  app/teach/page.tsx      /teach teacher console
+  app/admin/page.tsx      /admin tech teacher
+  lib/api.ts              JSON API calls with the CSRF header
+  tests/                  Vitest and Testing Library component and page tests
+  e2e/                    Playwright smoke against the compose stack
 worker/
   agent.py                auth proxy + heartbeat
   Dockerfile              agent image
@@ -95,13 +106,17 @@ LICENSES.md               every component and default model with its licence
 
 uvicorn, one worker to start. Live events go through Postgres: the app issues `NOTIFY` on each stored message, flag, join and state change, and each process `LISTEN`s and fans the events out to its own SSE clients. A second process sees every event, so the app can add workers if one can't keep up.
 
-Three web surfaces, all served by the app:
+The app serves only the JSON API under `/api/` and `/healthz`.
+
+### web
+
+The Next.js app in `web/` (ADR-0016). It holds no data and no secrets. Pages are client components that call the app's JSON API. Server-side rendering features stay minimal, and no server action talks to the database. Three web surfaces:
 
 - `/` student chat. Join, model picker, conversation list, chat.
 - `/teach` teacher console. Session controls, live class grid, transcripts, flags, usage summary.
 - `/admin` tech teacher. Workers and join command, models on/off, guard actions, self-harm message, retention, staff accounts, backup, audit log.
 
-JSON API under `/api/`. Live updates over Server-Sent Events. SSE goes one way, works through Caddy with no extra configuration, and reconnects on its own.
+Live updates come from the app over Server-Sent Events, read in the browser with `EventSource`. SSE goes one way, works through Caddy with no extra configuration, and reconnects on its own.
 
 ### guard
 
@@ -241,6 +256,7 @@ Live view: the app publishes an event per stored message, flag, join and state c
 
 - Caddy publishes 443 and redirects 80. `SERVER_NAME` in `.env` sets the hostname (a local DNS name or the IP address).
 - `tls internal` creates a local CA in the `caddy_data` volume. The admin page links to download the root certificate, and `docs/install.md` shows how to trust it on Windows, macOS, iOS, Android and ChromeOS. Until a device trusts it, the browser shows a warning (PRD risk). iOS needs the profile installed and then enabled under Certificate Trust Settings. Managed Chromebooks take it through the Google Admin console. Android trust in Chrome is unverified and is a pilot check.
+- Caddy routes `/api/*`, including the SSE streams, and `/healthz` to `app`, and everything else to `web`. Both share one origin, so the session cookie and the CSRF header work unchanged. Browsers never call the app on another origin, and neither `app` nor `web` publishes a port.
 - On the Mac in development, `http://localhost` skips TLS.
 - The guard and the database are on the internal compose network and publish no ports.
 
@@ -251,13 +267,13 @@ Live view: the app publishes an event per stored message, flag, join and state c
 - One smoke test boots the real compose stack with an agent in front of a local model server running Gemma 4 E2B, joins a student, and checks a reply arrives and appears in the teacher stream. Run on demand on the Mac, not in every test run.
 - Guard check: a fixed list of test prompts per R6.3 category run against the real guard (acceptance 7), on demand.
 - Load test: `tests/load.py` simulates 30 students over the HTTP API and reports lost messages and time to first segment (acceptance 12). Run on the Windows GPU machine.
-- Front end: checked by hand against `docs/manual-tests.md` on a phone, a tablet and a laptop. Browser automation waits until the pages settle.
+- Front end: component and page tests with Vitest and Testing Library, with the API mocked. A Playwright smoke in `web/e2e/` runs against the compose stack with the fake worker and fake guard: a student joins and chats, and the teacher sees it. Devices are still checked by hand against `docs/manual-tests.md` on a phone, a tablet and a laptop.
 
 ## Operations
 
 - Logs: the app logs JSON lines to stdout. Docker keeps them. Chat text never goes to logs, only to the database.
 - Health: `/healthz` reports database, guard and worker counts. The admin page shows the same.
-- Upgrade: `git pull && docker compose up -d --build`. Migrations run on start. Back up first with `pg_dump`; the docs say so.
+- Upgrade: `git pull && docker compose up -d --build`, which rebuilds both the `app` and `web` images. Migrations run on start. Back up first with `pg_dump`; the docs say so.
 - Postgres major upgrades are a dump and restore into the new version, done in a release with its own instructions.
 - No telemetry leaves the server.
 

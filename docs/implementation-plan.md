@@ -6,27 +6,28 @@ Each step ends with passing tests and something you can run on the Mac. Steps ru
 
 ## 0. Scaffold
 
-Outcome: `docker compose up` on the Mac serves a page from the app, and `pytest` passes.
+Outcome: `docker compose up` on the Mac serves a page from `web` and `/healthz` from the app, and `pytest` and `npm test` pass.
 
-- `pyproject.toml`, `Dockerfile`, `compose.yml` with caddy, app and db (official `postgres:18` image, named volume, internal network only, no published port), `Caddyfile` (plain HTTP on localhost for now). `.env` with generated database credentials.
+- `pyproject.toml`, `Dockerfile`, `compose.yml` with caddy, app, web and db (official `postgres:18` image, named volume, internal network only, no published port), `Caddyfile` (plain HTTP on localhost for now, `/api/*` and `/healthz` to app, everything else to web). `.env` with generated database credentials.
+- `web/`: Next.js app (App Router, TypeScript) with `output: "standalone"`, its Dockerfile, a placeholder page at `/`, `lib/api.ts` for API calls with the CSRF header, and Vitest with Testing Library set up with one passing test. Pinned versions in `package.json` and the lockfile.
 - `app/main.py` with `/healthz`, `app/db.py` with the psycopg async pool, applying `schema/001_init.sql` with all tables from the architecture and recording it in `schema_migrations`.
 - `tests/` with the test Postgres (one container in Docker for the test session, a disposable database per run), the ASGI test client fixture, the fake worker and the fake guard.
 - `LICENSES.md` started.
 
 Excludes: any feature.
 
-Checks: `pytest` green. `docker compose up` then `curl localhost/healthz` returns ok. A migration test applies the schema to an empty database and to an already-migrated one.
+Checks: `pytest` and `npm test` in `web/` green. `docker compose up` then `curl localhost/healthz` returns ok and `curl localhost/` returns the web page. A migration test applies the schema to an empty database and to an already-migrated one.
 
 ## 1. Staff accounts (parallel with 2)
 
 Outcome: the tech teacher creates the admin account with the setup code and signs in. The admin creates a teacher account.
 
 - Setup code printed to the log on first start, setup page, login, logout, roles, CSRF, cookie sessions in the database.
-- Bare `/admin` and `/teach` pages that need the right role.
+- Setup and login pages, and bare `/admin` and `/teach` pages that need the right role, in `web/`.
 
 Requirements: R1.2, part of R7.4 (audit rows for account changes).
 
-Checks: API tests for setup-once, wrong code, login, role enforcement, CSRF rejection, audit rows.
+Checks: API tests for setup-once, wrong code, login, role enforcement, CSRF rejection, audit rows. Vitest tests for the setup and login pages.
 
 ## 2. Worker registry and the worker stack (parallel with 1)
 
@@ -34,7 +35,7 @@ Outcome: on the Mac, the agent in front of a native Ollama (or llama-server) run
 
 - `worker/agent.py` (auth proxy and heartbeat), its Dockerfile and `worker/compose.yml`. `worker/recipes/`: llama-server compose with nvidia and cpu profiles, Ollama notes.
 - `/api/workers/heartbeat` with join token, deny list, down after 45 s, routing by spare capacity from in-flight counts, model list built from heartbeats, models on/off.
-- Admin page section: join token and command (bash and PowerShell), worker list with status, models and capacity, remove worker, rotate token, model toggles.
+- Admin page section in `web/`: join token and command (bash and PowerShell), worker list with status, models and capacity, remove worker, rotate token, model toggles.
 
 Requirements: R2.1-R2.5, R3.1.
 
@@ -47,8 +48,8 @@ Depends on 1.
 Outcome: a teacher creates a class with instructions and a message limit, starts a session, sees a six-digit code, and students join with code and name.
 
 - Class create and edit. Start session, open, pause, close. Join endpoint with per-IP rate limit. Student cookie. Rename and remove student.
-- Teacher page: session bar with the code, roster list (static refresh for now).
-- Student page: join form.
+- Teacher page in `web/`: session bar with the code, roster list (manual refresh for now).
+- Student page in `web/`: join form.
 
 Requirements: R3.2, R3.3 as decided in D1, R3.4 (limit stored), R4.6, R5.4.
 
@@ -61,7 +62,7 @@ Depends on 2 and 3.
 Outcome: a student on a phone and a laptop each pick a model and get a streamed reply from the Mac worker. Everything is stored.
 
 - `chat.py` pipeline steps 1, 2, 4, 5 and 7. Message limit enforced. Retry on another worker when one fails.
-- Student page: the monitoring notice before the first message and on every chat, model picker showing enabled models only, streaming reply, new conversation, list of this session's conversations. Accessible markup.
+- Student page in `web/`: the monitoring notice before the first message and on every chat, model picker showing enabled models only, streaming reply, new conversation, list of this session's conversations. Accessible markup.
 - The guard step is a pass-through that fails closed unless `GUARD_DISABLED=1`, which only the test settings and this step's manual run use.
 
 Requirements: R4.1-R4.4, acceptance 3 (minus the teacher side), 4, 6.
@@ -76,7 +77,7 @@ Outcome: every prompt and reply segment is checked by Qwen3Guard on CPU, and the
 
 - `guard` service in `compose.yml` with the weights in a volume. `guard.py` prompt format, parsing, category mapping, Controversial as unsafe.
 - Pipeline steps 3 and 6: prompt check, segmented reply release, stop on a tripped segment.
-- Admin page section: action per category and the self-harm message (default text with NZ helplines), both editable.
+- Admin page section in `web/`: action per category and the self-harm message (default text with NZ helplines), both editable.
 - Fail closed when the guard is down. Remove `GUARD_DISABLED`.
 - `tests/guard_prompts.py`: test prompts per R6.3 category, run on demand against the real guard.
 
@@ -91,12 +92,13 @@ Depends on 5.
 Outcome: the teacher watches the class live, opens transcripts, reviews flags and sees the usage summary.
 
 - `NOTIFY` on each stored message, flag, join and state change. `live.py` `LISTEN`s and fans out to the SSE endpoint per lesson session, reconnect then resync.
-- Teacher page as specified in the architecture's Teacher console section: session bar, card grid, usage strip, transcript panel, mark reviewed.
+- Teacher page in `web/` as specified in the architecture's Teacher console section: session bar, card grid, usage strip, transcript panel, mark reviewed. The SSE stream is read in the browser with `EventSource`.
+- Playwright smoke in `web/e2e/` against the compose stack with the fake worker and fake guard: a student joins and chats, and the teacher sees it.
 - `docs/manual-tests.md` for the console on laptop and iPad.
 
 Requirements: R5.1-R5.5, R6.7, D1 usage summary, acceptance 3 (teacher side within five seconds), 9.
 
-Checks: API tests that a stored message, flag, join and state change each produce one event on the right session's stream and none on another, including with two app processes. Manual tests file run on the Mac with two student devices.
+Checks: API tests that a stored message, flag, join and state change each produce one event on the right session's stream and none on another, including with two app processes. Vitest tests for the card grid, transcript panel and usage strip. The Playwright smoke passes. Manual tests file run on the Mac with two student devices.
 
 ## 7. Records and audit
 
@@ -106,8 +108,8 @@ Outcome: retention runs, one student can be exported and deleted, the whole serv
 
 - Hourly retention task, default 30 days (D2).
 - Student export (JSON) and delete.
-- Backup with `pg_dump -Fc` through `docker compose exec db`. Restore with `pg_restore` into an emptied database, app stopped. Download from the admin page runs the same dump.
-- Audit rows for model changes, session state changes, flag reviews, exports and deletions. Admin page list.
+- Backup with `pg_dump -Fc` through `docker compose exec db`. Restore with `pg_restore` into an emptied database, app stopped. Download from the admin page in `web/` runs the same dump.
+- Audit rows for model changes, session state changes, flag reviews, exports and deletions. Admin page list in `web/`.
 
 Requirements: R1.5, R7.1-R7.4, acceptance 10.
 
@@ -119,7 +121,7 @@ Depends on 6 and 7.
 
 Outcome: someone new follows the README and gets the server running and a worker joined on Windows with an NVIDIA card.
 
-- Caddy `tls internal` with `SERVER_NAME`, root certificate download on the admin page.
+- Caddy `tls internal` with `SERVER_NAME`, root certificate download on the admin page in `web/`.
 - `README.md` quick start. `docs/install.md`: server install, worker join on Windows (PowerShell) and Mac, trusting the certificate per device, firewall rule so only the server reaches workers, upgrade, backup.
 - `LICENSES.md` complete, including default models.
 - Run on a Windows test machine with an NVIDIA card: acceptance 1, 2, 5, 8.
