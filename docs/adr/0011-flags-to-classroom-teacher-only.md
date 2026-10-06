@@ -1,7 +1,6 @@
 # ADR-0011: Flags to classroom teacher only
 
-Status: Accepted. Date: 2026-10-07. Decided by: JV (D6).
-
+Status: Accepted. Date: 2026-10-07.
 ## Context
 
 Flags need to reach a person without adding infrastructure or an escalation process the product has to own.

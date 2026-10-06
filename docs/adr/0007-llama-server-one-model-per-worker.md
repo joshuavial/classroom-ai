@@ -1,7 +1,6 @@
 # ADR-0007: Llama server one model per worker
 
-Status: Superseded by ADR-0014. Date: 2026-10-06. Decided by: Lead agent.
-
+Status: Superseded by ADR-0014. Date: 2026-10-06.
 ## Context
 
 Workers need an MIT-licensed OpenAI-compatible server that fits 8-24 GB cards and runs on CPU for development.

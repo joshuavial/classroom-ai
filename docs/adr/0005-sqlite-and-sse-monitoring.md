@@ -1,7 +1,6 @@
 # ADR-0005: Sqlite and sse monitoring
 
-Status: Accepted. Date: 2026-10-06. Decided by: Lead agent.
-
+Status: Accepted. Date: 2026-10-06.
 ## Context
 
 The teacher needs a live view of every conversation. Langfuse needs six services and 16 GiB of RAM and has no classroom view.

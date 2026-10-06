@@ -1,7 +1,6 @@
 # ADR-0003: Docker desktop everywhere
 
-Status: Accepted, amended by ADR-0014 (the model server may run natively; only the agent needs Docker). Date: 2026-10-06. Decided by: JV (D3).
-
+Status: Accepted, amended by ADR-0014 (the model server may run natively; only the agent needs Docker). Date: 2026-10-06.
 ## Context
 
 No pilot school yet. Windows is the likely host. Development happens on a Mac.
@@ -12,4 +11,4 @@ The server and the worker both run in Docker, so each machine needs only Docker 
 
 ## Consequences
 
-The Mac can't test GPU speed; that happens on JV's Windows machine. Docker Model Runner can use the Mac GPU but has no API key, so it is not used.
+The Mac can't test GPU speed; that happens on a Windows test machine with an NVIDIA card. Docker Model Runner can use the Mac GPU but has no API key, so it is not used.

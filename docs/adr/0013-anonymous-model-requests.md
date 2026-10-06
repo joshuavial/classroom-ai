@@ -1,7 +1,6 @@
 # ADR-0013: Anonymous model requests
 
-Status: Accepted. Date: 2026-10-06. Decided by: JV.
-
+Status: Accepted. Date: 2026-10-06.
 ## Context
 
 Schools with spare GPUs could lend them to schools without, especially across time zones.

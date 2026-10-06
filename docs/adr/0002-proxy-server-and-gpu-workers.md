@@ -1,7 +1,6 @@
 # ADR-0002: Proxy server and gpu workers
 
-Status: Accepted, amended by ADR-0014 (workers are not tied to llama-server). Date: 2026-10-06. Decided by: JV.
-
+Status: Accepted, amended by ADR-0014 (workers are not tied to llama-server). Date: 2026-10-06.
 ## Context
 
 Students use phones, tablets and lab PCs that have no GPU. The school's GPUs are spread across other machines.

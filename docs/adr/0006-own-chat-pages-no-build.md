@@ -1,7 +1,6 @@
 # ADR-0006: Own chat pages no build
 
-Status: Accepted. Date: 2026-10-06. Decided by: Lead agent.
-
+Status: Accepted. Date: 2026-10-06.
 ## Context
 
 Open WebUI is non-OSI from v0.6.6. LibreChat has no live teacher view and needs MongoDB.

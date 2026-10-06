@@ -122,11 +122,11 @@ Outcome: someone new follows the README and gets the server running and a worker
 - Caddy `tls internal` with `SERVER_NAME`, root certificate download on the admin page.
 - `README.md` quick start. `docs/install.md`: server install, worker join on Windows (PowerShell) and Mac, trusting the certificate per device, firewall rule so only the server reaches workers, upgrade, backup.
 - `LICENSES.md` complete, including default models.
-- Run on JV's Windows machine: acceptance 1, 2, 5, 8.
+- Run on a Windows test machine with an NVIDIA card: acceptance 1, 2, 5, 8.
 
 Requirements: R1.1, R1.3, R1.4, R1.6, R2.6, acceptance 1, 2, 5, 8, 11.
 
-Checks: JV's Windows run against the acceptance list, recorded in `docs/pilot-checks.md`. Upgrade from the previous commit keeps data.
+Checks: the Windows test machine run against the acceptance list, recorded in `docs/pilot-checks.md`. Upgrade from the previous commit keeps data.
 
 ## 9. Load test
 

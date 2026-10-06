@@ -1,7 +1,6 @@
 # ADR-0008: Cpu guard on the server
 
-Status: Accepted. Date: 2026-10-06. Decided by: Lead agent.
-
+Status: Accepted. Date: 2026-10-06.
 ## Context
 
 Checks must work when no GPU worker is up.

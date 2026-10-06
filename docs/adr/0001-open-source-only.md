@@ -1,7 +1,6 @@
 # ADR-0001: Open source only
 
-Status: Accepted. Date: 2026-10-06. Decided by: JV.
-
+Status: Accepted. Date: 2026-10-06.
 ## Context
 
 Schools need something they can audit, fork and keep running without a vendor. Many classroom AI products are paid cloud services.

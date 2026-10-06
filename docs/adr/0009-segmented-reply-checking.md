@@ -1,7 +1,6 @@
 # ADR-0009: Segmented reply checking
 
-Status: Accepted. Date: 2026-10-06. Decided by: Lead agent.
-
+Status: Accepted. Date: 2026-10-06.
 ## Context
 
 Replies should stream to students, and no reply text may reach a student unchecked.

@@ -1,6 +1,6 @@
 # ADR-0014: Any OpenAI-compatible worker
 
-Status: Accepted. Date: 2026-10-07. Decided by: JV. Supersedes ADR-0007. Amends ADR-0002 and ADR-0003.
+Status: Accepted. Date: 2026-10-07. Supersedes ADR-0007. Amends ADR-0002 and ADR-0003.
 
 ## Context
 
