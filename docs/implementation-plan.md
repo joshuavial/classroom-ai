@@ -76,13 +76,13 @@ Outcome: every prompt and reply segment is checked by Qwen3Guard on CPU, and the
 
 - `guard` service in `compose.yml` with the weights in a volume. `guard.py` prompt format, parsing, category mapping, Controversial as unsafe.
 - Pipeline steps 3 and 6: prompt check, segmented reply release, stop on a tripped segment.
-- Default category actions and the default self-harm message (NZ helplines) in settings.
+- Admin page section: action per category and the self-harm message (default text with NZ helplines), both editable.
 - Fail closed when the guard is down. Remove `GUARD_DISABLED`.
 - `tests/guard_prompts.py`: test prompts per R6.3 category, run on demand against the real guard.
 
 Requirements: R4.5, R6.1-R6.6.
 
-Checks: unit tests for parsing every verdict shape. API tests with the fake guard for each action (allow+flag, block+flag, block), self-harm static message with no model reply, a reply segment tripping mid-stream, guard down. On demand: the category prompt run against the real guard, results recorded in `docs/guard-results.md`.
+Checks: unit tests for parsing every verdict shape. API tests for saving the settings, and with the fake guard for each action (allow+flag, block+flag, block), self-harm static message with no model reply, a reply segment tripping mid-stream, guard down. On demand: the category prompt run against the real guard, results recorded in `docs/guard-results.md`.
 
 ## 6. Teacher console, live
 
@@ -91,40 +91,31 @@ Depends on 5.
 Outcome: the teacher watches the class live, opens transcripts, reviews flags and sees the usage summary.
 
 - `live.py` event bus, SSE endpoint per lesson session, reconnect then resync.
-- Teacher page as specified in the architecture's Teacher console section: session bar, card grid, usage strip, transcript panel, mark reviewed, safeguarding contact shown on self-harm flags.
+- Teacher page as specified in the architecture's Teacher console section: session bar, card grid, usage strip, transcript panel, mark reviewed.
 - `docs/manual-tests.md` for the console on laptop and iPad.
 
 Requirements: R5.1-R5.5, R6.7, D1 usage summary, acceptance 3 (teacher side within five seconds), 9.
 
 Checks: API tests that a stored message, flag, join and state change each produce one event on the right session's stream and none on another. Manual tests file run on the Mac with two student devices.
 
-## 7. Admin settings and audit (parallel with 8)
+## 7. Records and audit
 
-Depends on 5.
+Depends on 4. Can run alongside 5 and 6.
 
-Outcome: the admin sets category actions, edits the safeguarding message and contact, manages staff, and reads the audit log.
-
-Requirements: R6.4, R6.5 (editing), R6.7 (contact), R7.4.
-
-Checks: API tests for each setting and that each staff action writes one audit row.
-
-## 8. Records (parallel with 7)
-
-Depends on 4.
-
-Outcome: retention runs, one student can be exported and deleted, and the whole server can be backed up and restored.
+Outcome: retention runs, one student can be exported and deleted, the whole server can be backed up and restored, and staff actions are in an audit log the admin can read.
 
 - Hourly retention task, default 30 days (D2).
 - Student export (JSON) and delete.
 - `python -m app.admin backup|restore`, download from the admin page.
+- Audit rows for model changes, session state changes, flag reviews, exports and deletions. Admin page list.
 
-Requirements: R1.5, R7.1-R7.3, acceptance 10.
+Requirements: R1.5, R7.1-R7.4, acceptance 10.
 
-Checks: retention test with a fake clock. Export contents test. Backup, wipe, restore round trip test on a populated database.
+Checks: retention test with a fake clock. Export contents test. Backup, wipe, restore round trip on a populated database. Each staff action writes one audit row.
 
-## 9. Install, TLS and Windows
+## 8. Install, TLS and Windows
 
-Depends on 6, 7 and 8.
+Depends on 6 and 7.
 
 Outcome: someone new follows the README and gets the server running and a worker joined on Windows with an NVIDIA card.
 
@@ -137,9 +128,9 @@ Requirements: R1.1, R1.3, R1.4, R1.6, R2.6, acceptance 1, 2, 5, 8, 11.
 
 Checks: JV's Windows run against the acceptance list, recorded in `docs/pilot-checks.md`. Upgrade from the previous commit keeps data.
 
-## 10. Load test
+## 9. Load test
 
-Depends on 9.
+Depends on 8.
 
 Outcome: measured capacity for 30 students on the Windows GPU.
 
@@ -151,12 +142,11 @@ Requirements: acceptance 12, PRD outcome on reply time.
 ## Order and parallel work
 
 ```
-0 -> 1 -> 3 -> 4 -> 5 -> 6 -> 9 -> 10
-0 -> 2 ------^         \-> 7 -^
-                 4 -> 8 ------^
+0 -> 1 -> 3 -> 4 -> 5 -> 6 -> 8 -> 9
+0 -> 2 ------^    \-> 7 ------^
 ```
 
-Lanes: 1 and 2 run together after 0. 7 and 8 run together after 5 (8 can start after 4). Everything else is sequential because each step builds on the one before.
+Lanes: 1 and 2 run together after 0. 7 runs alongside 5 and 6. Everything else is sequential because each step builds on the one before.
 
 ## Not in this plan
 

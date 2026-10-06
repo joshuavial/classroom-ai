@@ -15,7 +15,6 @@ This increment covers one school piloting with one class for one lesson.
 | Tech teacher (installer, admin) | Install the server with one command. Add and remove GPU machines easily. See which machines are up. Back up and restore. |
 | Classroom teacher | Create a class and get students in quickly. Choose models and instructions. Watch every conversation live. Read any transcript. Pause the class. See flags and act on them. |
 | Student | Open a web page on whatever device they have, get in, and chat. Know that the teacher can see the chat. Get a clear message when something is blocked. |
-| Safeguarding lead | Be notified of self-harm and similar flags through the school's own process, with the transcript available. |
 
 ## Outcome and success signals
 
@@ -78,7 +77,7 @@ This increment covers one school piloting with one class for one lesson.
 - R6.4 For each category the admin chooses the action: allow and flag, block and flag, or block only.
 - R6.5 Self-harm always flags, and shows the student a message written by the school (with local helplines such as 1737 in New Zealand). No AI-generated reply is shown for it. The admin edits that message.
 - R6.6 Each flag records the category, the message, the time and the student.
-- R6.7 The console shows the school's named safeguarding contact. Following up a self-harm flag is the school's process; the product makes the flag and transcript available and records who reviewed it and when.
+- R6.7 Flags go to the classroom teacher in the console, nowhere else. The teacher marks each one reviewed, and the product records who and when. Any follow-up after that is up to the teacher.
 
 ### 7. Records and privacy
 
@@ -120,7 +119,7 @@ This increment covers one school piloting with one class for one lesson.
 - A2 Student devices and the server are on the same school network. The school can add a local address for the server, or students use its IP address.
 - A3 One teacher runs one class at a time for the pilot. Several classes can exist, but the pilot only needs one live.
 - A4 English first. Guard accuracy in te reo Māori and other languages is untested.
-- A5 The school has a safeguarding contact and an acceptable-use policy that covers AI.
+- A5 The school has an acceptable-use policy that covers AI.
 - A6 Default models follow the research: a small open guard model for checks, and an open chat model sized to the card (see architecture.md).
 
 ## Risks
@@ -142,5 +141,6 @@ None. All five are answered under Decisions.
 - D2 (Q2, JV 2026-10-06) Conversations are kept 30 days by default. The admin can change it.
 - D3 (Q3, JV 2026-10-06) No pilot school yet. Expect Windows. The server and the GPU worker both run in Docker, so each machine needs only Docker Desktop; the worker container uses whatever GPU the host exposes to Docker. Build and drive it on JV's Mac first, then test on his Windows machine with an NVIDIA card.
 - D4 (Q4, JV 2026-10-06) No academic-integrity checks in this increment. It is a plain chatbot with the R6 safeguards; class instructions are the only steer. Integrity checks move to a later increment.
+- D6 (JV 2026-10-07) Serious disclosures go to the classroom teacher only. No safeguarding contact or escalation path in the product.
 - D5 (Q5, JV 2026-10-06) Keep the working name classroom-ai until a better one is chosen.
 - The teacher console for watching chats (journey 5) has to be pleasant for a non-technical teacher to use, not a bare admin table (JV 2026-10-06).

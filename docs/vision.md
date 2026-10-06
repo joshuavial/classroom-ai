@@ -36,7 +36,7 @@ Sharing still needs a written agreement between the schools and an encrypted lin
 1. Open source throughout. OSI-licensed software and openly licensed models only, with no vendor accounts, subscriptions or telemetry sent home. A school can fork it and keep running it if this project stops.
 2. The school owns the data. Conversations stay on school hardware. The school decides how long to keep them and can delete them.
 3. Students know they are monitored. Every chat tells the student that their teacher can read it. The teacher's view is supervision of a learning tool, the same as walking around the lab.
-4. A person handles serious disclosures. Safety checks flag and block, and never counsel. A disclosure of self-harm reaches a named adult at the school, and the student sees a message the school wrote.
+4. The teacher handles serious disclosures. Safety checks flag and block, and never counsel. A disclosure of self-harm is flagged to the classroom teacher, and the student sees a message the school wrote.
 5. One teacher can run it. Install, upgrade and adding a GPU each take one documented command. A tech teacher should be able to do each from the README alone.
 6. Small enough to audit. The code and storage are plain enough that a school IT person can read how it works in an afternoon.
 
@@ -47,7 +47,7 @@ Sharing still needs a written agreement between the schools and an encrypted lin
 | Tech teacher or school IT person | Installs it and looks after it. |
 | Classroom teacher | Sets up a class, chooses what the AI may do, watches the lesson, follows up on flags. |
 | Student | A private, safe AI tutor at school. |
-| Safeguarding lead and principal | Confidence that serious issues reach a person, and a way to explain the service to parents. |
+| Principal | A way to explain the service to parents and the board. |
 
 ## Possible later increments
 

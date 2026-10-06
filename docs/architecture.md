@@ -94,7 +94,7 @@ Three web surfaces, all served by the app:
 
 - `/` student chat. Join, model picker, conversation list, chat.
 - `/teach` teacher console. Session controls, live class grid, transcripts, flags, usage summary.
-- `/admin` tech teacher. Workers and join command, models on/off, guard actions, safeguarding message and contact, retention, staff accounts, backup, audit log.
+- `/admin` tech teacher. Workers and join command, models on/off, guard actions, self-harm message, retention, staff accounts, backup, audit log.
 
 JSON API under `/api/`. Live updates over Server-Sent Events. SSE goes one way, works through Caddy with no extra configuration, and reconnects on its own.
 
@@ -190,7 +190,7 @@ SQLite file in the `data` volume. Tables:
 | `flags` | Message, category, action taken, reviewed by, reviewed at. |
 | `workers` | ID, address, API key, models, free slots, last heartbeat, removed. |
 | `models` | Model name, enabled. |
-| `settings` | Key/value: category actions, safeguarding message, safeguarding contact, retention days (30), join token. |
+| `settings` | Key/value: category actions, self-harm message, retention days (30), join token. |
 | `audit` | Who, what, when, for staff actions (R7.4). |
 
 Migrations are numbered SQL files applied at startup and recorded in `PRAGMA user_version`.
