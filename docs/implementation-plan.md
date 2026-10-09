@@ -71,25 +71,37 @@ Requirements: R4.1-R4.4, acceptance 3 (minus the teacher side), 4, 6.
 
 Checks: API tests with the fake worker for streaming, storage before send, disabled model refused, limit reached, worker failover, worker drop mid-reply stored as error. Manual: phone and laptop on the Mac's LAN address.
 
-## 5. Guard
+## 5. Guard bake-off (parallel with 1-4)
 
-Depends on 4.
+Outcome: a measured choice of guard model for step 6, recorded in `docs/guard-results.md`.
 
-Outcome: every prompt and reply segment is checked by Qwen3Guard on CPU, and the configured action happens.
+- Candidates, all on CPU in llama-server: Qwen3Guard-Gen-0.6B and Qwen3Guard-Gen-4B (Q8_0 GGUF), and Shieldstral-1.0-3B.
+- `tests/guard_set.jsonl`: a labelled set of about 1,500 messages, student prompts and model replies, safe and unsafe, covering each guard category, plus borderline classroom content (history, biology, fiction) to measure false positives. The source and licence of each item are noted alongside it.
+- `tests/guard_bakeoff.py`: runs each candidate against the set and records recall per category, false-positive rate, and CPU latency per check with 30 concurrent students on the reference server hardware. It is also the on-demand check of the real guard (acceptance 7).
+- `docs/guard-results.md` with the numbers and a recommendation. Step 6 uses the winner, and ADR-0008 is updated to name it.
 
-- `guard` service in `compose.yml` with the weights in a volume. `guard.py` prompt format, parsing, Controversial as unsafe.
+Requirements: acceptance 7.
+
+Checks: unit tests for the scoring on a small fixed set. The script runs end to end against each candidate. `docs/guard-results.md` and ADR-0008 name the same model.
+
+## 6. Guard
+
+Depends on 4 and 5.
+
+Outcome: every prompt and reply segment is checked on CPU by the guard model chosen in step 5, and the configured action happens.
+
+- `guard` service in `compose.yml` with the weights in a volume. `guard.py` prompt format and parsing for the chosen model. If it is Qwen3Guard, Controversial counts as unsafe.
 - Pipeline steps 3 and 6: prompt check, segmented reply release, stop on a tripped segment.
 - Admin page section in `web/`: for each category the guard model provides, an action and the student-facing message, both editable.
 - Fail closed when the guard is down. Remove `GUARD_DISABLED`.
-- `tests/guard_prompts.py`: test prompts per category, run on demand against the real guard.
 
 Requirements: R4.5, R6.1-R6.6.
 
-Checks: unit tests for parsing every verdict shape. API tests for saving the settings, and with the fake guard for each action (allow+flag, block+flag, block), a block with the configured message shown and no model reply, a reply segment tripping mid-stream, guard down. On demand: the category prompt run against the real guard, results recorded in `docs/guard-results.md`.
+Checks: unit tests for parsing every verdict shape. API tests for saving the settings, and with the fake guard for each action (allow+flag, block+flag, block), a block with the configured message shown and no model reply, a reply segment tripping mid-stream, guard down. On demand: the step 5 script against the guard as deployed.
 
-## 6. Teacher console, live
+## 7. Teacher console, live
 
-Depends on 5.
+Depends on 6.
 
 Outcome: the teacher watches the class live, opens transcripts, reviews flags and sees the usage summary.
 
@@ -102,9 +114,9 @@ Requirements: R5.1-R5.5, R6.7, D1 usage summary, acceptance 3 (teacher side with
 
 Checks: API tests that a stored message, flag, join and state change each produce one event on the right session's stream and none on another, including with two app processes. Vitest tests for the card grid, transcript panel and usage strip. The Playwright smoke passes. Manual tests file run on the Mac with two student devices.
 
-## 7. Records and audit
+## 8. Records and audit
 
-Depends on 4. Can run alongside 5 and 6.
+Depends on 4. Can run alongside 6 and 7.
 
 Outcome: retention runs, one student can be exported and deleted, the whole server can be backed up and restored, and staff actions are in an audit log the admin can read.
 
@@ -117,9 +129,9 @@ Requirements: R1.5, R7.1-R7.4, acceptance 10.
 
 Checks: retention test with a fake clock. Export contents test. Backup, wipe, restore round trip on a populated database. Each staff action writes one audit row.
 
-## 8. Install, TLS and Windows
+## 9. Install, TLS and Windows
 
-Depends on 6 and 7.
+Depends on 7 and 8.
 
 Outcome: someone new follows the README and gets the server running and a worker joined on Windows with an NVIDIA card.
 
@@ -132,9 +144,9 @@ Requirements: R1.1, R1.3, R1.4, R1.6, R2.6, acceptance 1, 2, 5, 8, 11.
 
 Checks: the Windows test machine run against the acceptance list, recorded in `docs/pilot-checks.md`. Upgrade from the previous commit keeps data.
 
-## 9. Load test
+## 10. Load test
 
-Depends on 8.
+Depends on 9.
 
 Outcome: measured capacity for 30 students on the Windows GPU.
 
@@ -146,11 +158,12 @@ Requirements: acceptance 12, PRD outcome on reply time.
 ## Order and parallel work
 
 ```
-0 -> 1 -> 3 -> 4 -> 5 -> 6 -> 8 -> 9
-0 -> 2 ------^    \-> 7 ------^
+0 -> 1 -> 3 -> 4 -> 6 -> 7 -> 9 -> 10
+0 -> 2 ------^    \-> 8 ------^
+0 -> 5 ------------^
 ```
 
-Lanes: 1 and 2 run together after 0. 7 runs alongside 5 and 6. Everything else is sequential because each step builds on the one before.
+Lanes: 1 and 2 run together after 0. 5 runs alongside 1-4. 8 runs alongside 6 and 7. Everything else is sequential because each step builds on the one before.
 
 ## Not in this plan
 
