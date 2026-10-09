@@ -11,4 +11,4 @@ Every component is OSI-licensed and every model openly licensed. No SaaS, vendor
 
 ## Consequences
 
-Some strong tools are excluded. Docker Desktop is a host prerequisite, not a shipped component. It is proprietary and free only for organisations under 250 employees and US$10M revenue. Its terms say government entities need a paid subscription, which may include state schools. Docker Engine is the open option on Linux. Which container runtime the project recommends is an open question.
+Some strong tools are excluded. Docker Desktop is out as the documented runtime. It is proprietary and free only for organisations under 250 employees and US$10M revenue. Its terms say government entities need a paid subscription, which may include state schools. ADR-0003 uses Docker Engine, which is Apache-2.0, inside WSL2 instead.

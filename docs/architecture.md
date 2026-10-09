@@ -4,7 +4,7 @@ Status: draft for PRD 00 (lab pilot), 2026-10-06. Living document: update it whe
 
 ## Constraints from the PRD
 
-- One server machine and any number of GPU machines, each running Docker Desktop (D3). Windows hosts are expected. Development happens on a Mac.
+- One server machine and any number of GPU machines, each running Docker Engine (D3, ADR-0003). Windows 11 hosts are expected, with Docker Engine inside WSL2. Development happens on a Mac.
 - Students use only a browser. They never reach a GPU machine (R2.6).
 - No student message reaches a model, and no reply reaches a student, without being stored and checked (R6.1).
 - Checks keep working with no GPU machine up (R6.2).
@@ -136,7 +136,7 @@ Configuration is four environment variables: `SERVER_URL`, `JOIN_TOKEN`, `BACKEN
 
 Recipes for the model server, in `worker/recipes/`:
 
-- llama-server in Docker: `nvidia` profile with `gpus: all` (Windows needs Docker Desktop on WSL2 and a current NVIDIA driver on Windows itself), `cpu` profile for anything else.
+- llama-server in Docker: `nvidia` profile with `gpus: all` (on Windows: Docker Engine and the NVIDIA Container Toolkit inside WSL2, and a current NVIDIA driver on Windows itself), `cpu` profile for anything else.
 - Ollama installed natively: uses the GPU directly on Windows, Linux and the Mac (Metal). Set `OLLAMA_NUM_PARALLEL` to match `MAX_CONCURRENT`.
 
 On the Mac, development uses native Ollama or llama-server with Metal behind the agent, which is faster than a CPU container.

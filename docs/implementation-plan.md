@@ -136,7 +136,7 @@ Depends on 7 and 8.
 Outcome: someone new follows the README and gets the server running and a worker joined on Windows with an NVIDIA card.
 
 - Caddy `tls internal` with `SERVER_NAME`, root certificate download on the admin page in `web/`.
-- `README.md` quick start. `docs/install.md`: server install, worker join on Windows (PowerShell) and Mac, trusting the certificate per device, firewall rule so only the server reaches workers, upgrade, backup.
+- `README.md` quick start. `docs/install.md`: server install, Docker Engine in WSL2 on Windows 11 from `docs/research/container-runtime.md`, worker join on Windows (inside Ubuntu) and Mac, start on boot, trusting the certificate per device, firewall rule so only the server reaches workers, upgrade, backup.
 - `LICENSES.md` complete, including default models.
 - Run on a Windows test machine with an NVIDIA card: acceptance 1, 2, 5, 8.
 

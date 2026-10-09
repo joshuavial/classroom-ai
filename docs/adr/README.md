@@ -10,7 +10,7 @@ Template: copy any ADR and keep the headings (Context, Decision, Consequences).
 | --- | --- | --- |
 | [0001](0001-open-source-only.md) | Open source only | Proposed |
 | [0002](0002-proxy-server-and-gpu-workers.md) | Proxy server and gpu workers | Proposed |
-| [0003](0003-docker-desktop-everywhere.md) | Docker desktop everywhere | Proposed |
+| [0003](0003-docker-engine-in-wsl2.md) | Docker Engine in WSL2 on Windows | Proposed |
 | [0004](0004-own-gateway-app.md) | Own gateway app | Proposed |
 | [0005](0005-postgres-and-sse-monitoring.md) | Postgres and SSE monitoring | Proposed |
 | [0006](0006-nextjs-web-app.md) | Next.js web app | Proposed |
