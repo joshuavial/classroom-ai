@@ -44,7 +44,8 @@ if docker compose exec -T db sh -c '
     cat > "$dir/backup.dump"
     pg_restore --no-owner -f "$dir/backup.sql" "$dir/backup.dump"
     psql -X -q -v ON_ERROR_STOP=1 --single-transaction -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
-        -c "DROP SCHEMA public CASCADE" -c "CREATE SCHEMA public" -f "$dir/backup.sql"
+        -c "DROP SCHEMA public CASCADE" \
+        -c "CREATE SCHEMA public AUTHORIZATION pg_database_owner" -f "$dir/backup.sql"
 ' < "$file"; then
     status=0
     echo "restored $file"
