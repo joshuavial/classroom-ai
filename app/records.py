@@ -6,9 +6,13 @@ Backup and restore are scripts/backup.sh and scripts/restore.sh.
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 log = logging.getLogger("app.records")
+
+
+def iso(t: datetime) -> str:
+    return t.astimezone(UTC).isoformat()
 
 DEFAULT_RETENTION_DAYS = 30
 MAX_RETENTION_DAYS = 3650
@@ -94,15 +98,15 @@ async def export_student(conn, student_id: int) -> dict | None:
             fl = await conn.execute(
                 "SELECT category, action, created_at, reviewed_at FROM flags"
                 " WHERE message_id = %s ORDER BY id", (msg_id,))
-            flags = [{"category": cat, "action": act, "time": t.isoformat(),
+            flags = [{"category": cat, "action": act, "time": iso(t),
                       "reviewed": rev is not None} for cat, act, t, rev in await fl.fetchall()]
             messages.append({"role": role, "text": text, "status": status,
-                             "time": created_at.isoformat(), "flags": flags})
-        conversations.append({"model": model, "started": started_at.isoformat(), "messages": messages})
+                             "time": iso(created_at), "flags": flags})
+        conversations.append({"model": model, "started": iso(started_at), "messages": messages})
     return {
         "student": {"id": sid, "code": code, "name": name, "removed": removed,
-                    "joined": bound_at.isoformat() if bound_at else None},
-        "lesson_session": {"id": session_id, "opened": opened_at.isoformat(), "class": class_name},
+                    "joined": iso(bound_at) if bound_at else None},
+        "lesson_session": {"id": session_id, "opened": iso(opened_at), "class": class_name},
         "conversations": conversations,
     }
 
