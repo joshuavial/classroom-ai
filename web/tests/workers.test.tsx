@@ -187,3 +187,23 @@ test("models offered after the page opened appear on the next poll", async () =>
   });
   expect(screen.getByRole("checkbox", { name: "gemma-4-e2b-it" })).not.toBeChecked();
 });
+
+test("a failed join command load stays visible and drops any old command", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  let joinOk = true;
+  routes["GET /workers"] = () => ({ body: { workers: [] } });
+  routes["GET /workers/join"] = () => (joinOk ? { body: join } : { status: 500, body: { error: "unavailable" } });
+  routes["POST /workers/rotate"] = () => {
+    joinOk = false;
+    return { body: {} };
+  };
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  render(<Workers />);
+  expect(await screen.findByDisplayValue(join.bash)).toBeInTheDocument();
+  await click(screen.getByRole("button", { name: "Rotate join token" }));
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+  });
+  expect(screen.queryByDisplayValue(join.bash)).not.toBeInTheDocument();
+  expect(screen.getByText(/Could not load the join command/)).toBeInTheDocument();
+});

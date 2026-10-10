@@ -24,6 +24,8 @@ export default function Workers() {
   const [workers, setWorkers] = useState<Worker[] | null>(null);
   const [join, setJoin] = useState<Join | null>(null);
   const [error, setError] = useState("");
+  // Separate from error, which each worker poll clears.
+  const [joinError, setJoinError] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -39,9 +41,11 @@ export default function Workers() {
   const loadJoin = useCallback(async () => {
     try {
       setJoin(await api<Join>("/workers/join"));
+      setJoinError("");
     } catch (e) {
       onAuthError(e);
-      setError("Could not load the join command.");
+      setJoin(null); // never show a command that may be out of date
+      setJoinError("Could not load the join command. Reload the page to try again.");
     }
   }, []);
 
@@ -104,7 +108,7 @@ export default function Workers() {
           </label>
         </>
       ) : (
-        <p>Loading the join command.</p>
+        <p role={joinError ? "alert" : undefined}>{joinError || "Loading the join command."}</p>
       )}
       <button type="button" onClick={rotateToken}>
         Rotate join token

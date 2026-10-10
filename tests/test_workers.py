@@ -205,7 +205,7 @@ async def test_worker_url_used_when_given(env):
     "https://10.0.0.7:8081", "http://10.0.0.7", "http://10.0.0.7:8080", "http://u:p@10.0.0.7:8081",
     "http://10.0.0.7:8081/x", "http://10.0.0.7:8081?q", "http://127.0.0.1:8081", "http://0.0.0.0:8081",
     "http://169.254.1.1:8081", "http://224.0.0.1:8081", "http://[::1]:8081", "http://localhost:8081",
-    "http://no-such-host.invalid:8081", "http://10.0.0.7:x",
+    "http://no-such-host.invalid:8081", "http://10.0.0.7:x", "http://[broken:8081",
 ])
 async def test_bad_worker_url_rejected(env, url):
     env.agents.add("10.0.0.7", "k" * 40)

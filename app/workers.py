@@ -185,11 +185,11 @@ async def override_address(worker_url: str) -> str:
 
     Returns the address it checked, not the name, so a later DNS answer cannot
     send the server's requests somewhere else."""
-    url = urllib.parse.urlsplit(worker_url)
     try:
+        url = urllib.parse.urlsplit(worker_url)
         port = url.port
-    except ValueError:
-        port = None
+    except ValueError:  # for example an unclosed [ in the host
+        raise HeartbeatError(400, f"worker_url must be http://host:{AGENT_PORT}") from None
     if (url.scheme != "http" or not url.hostname or url.username or url.password
             or url.query or url.fragment or url.path not in ("", "/") or port != AGENT_PORT):
         raise HeartbeatError(400, f"worker_url must be http://host:{AGENT_PORT}")
