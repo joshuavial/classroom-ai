@@ -9,7 +9,7 @@ Steps marked **untested** have been put together from the cited documentation an
 - One machine for the server, on the school network, that stays on during lessons. It needs no GPU. Windows 11 22H2 or later, Ubuntu (Server or Desktop) 24.04 or later, or a Mac.
 - Docker Engine with the Compose plugin. On Windows that runs inside WSL2 Ubuntu (below); on Ubuntu install it from [Docker's apt repository](https://docs.docker.com/engine/install/ubuntu/). Docker Desktop is not needed and not recommended for schools (its licence may require a paid subscription for government entities).
 - `git`, and internet access while installing. Once installed, the server needs no internet (R1.3).
-- A name for the server that students will type: a local DNS name such as `classroom.school.lan`, or the server's fixed IP address. Ask whoever runs the school network to give the server a fixed address (a DHCP reservation).
+- A name for the server that students will type: a local DNS name such as `classroom.school.lan`, or the server's fixed IPv4 address. Ask whoever runs the school network to give the server a fixed address (a DHCP reservation).
 
 ## Install the server (Linux, or Ubuntu inside WSL2)
 
