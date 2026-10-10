@@ -7,6 +7,7 @@ import styles from "@/app/forms.module.css";
 import { ServerDown } from "@/app/server-down";
 import Models from "@/components/Models";
 import Workers from "@/components/Workers";
+import Records from "@/components/Records";
 
 type StaffRow = { username: string; role: Role; created_at: string };
 
@@ -119,6 +120,7 @@ export default function AdminPage() {
       <Workers />
       <Models />
       <StaffAccounts />
+      <Records />
     </main>
   );
 }

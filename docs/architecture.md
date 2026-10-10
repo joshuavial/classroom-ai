@@ -73,6 +73,8 @@ Dockerfile                app image (Python API)
 pyproject.toml            pinned Python dependencies, with uv.lock
 scripts/init-env.sh       writes .env once: generated database credentials, and with a server name the HTTPS settings
 compose.https.yml         adds port 443 for a school server; .env turns it on through COMPOSE_FILE
+scripts/backup.sh         pg_dump of the database to a file
+scripts/restore.sh        replaces the database with a backup, in one transaction
 app/
   main.py                 routes and startup (create_app, and from_env for uvicorn --factory)
   db.py                   Postgres connection pool, migrations, queries
@@ -82,7 +84,7 @@ app/
   guard.py                Qwen3Guard call, verdict parsing
   workers.py              registry, heartbeat, routing
   live.py                 LISTEN/NOTIFY fan-out to SSE clients
-  admin.py                backup, restore (pg_dump, pg_restore), retention, export, audit
+  records.py              retention, export and delete one student, audit log, backup download
 web/
   Dockerfile              web image, Next.js standalone output on Node
   package.json            pinned Next.js, React and test tools, with lockfile
@@ -243,13 +245,13 @@ Schema notes from `001_init.sql`:
 - `students` keeps one row per code. A code is unique within a lesson session among rows that are not removed, which is what lets unbinding add a fresh row with the same code. Uniqueness across open sessions is checked when codes are generated (step 3).
 - `auth_sessions` stores the sha256 of the cookie token, never the token, with exactly one of `staff_id` and `student_id` set and an `expires_at`. `002_staff_auth.sql` adds `csrf_token`, the session's own CSRF token, which every row needs.
 - `003_lesson_sessions.sql` allows at most one lesson session per class that is not closed.
-- Deleting a student cascades to their conversations, messages, flags and cookie sessions, and deleting a lesson session cascades to its students, so retention and delete-one-student are single deletes. `messages.worker_id` and `conversations.model` are plain text, so removing a worker or a model never touches transcripts. Deleting a staff account keeps audit rows (the username is copied into each) and flag reviews (`reviewed_by` becomes empty).
+- Deleting a student cascades to their conversations, messages, flags and cookie sessions, and deleting a lesson session cascades to its students, so delete-one-student is a single delete, and retention deletes sessions and conversations without touching their children one by one. `messages.worker_id` and `conversations.model` are plain text, so removing a worker or a model never touches transcripts. Deleting a staff account keeps audit rows (the username is copied into each) and flag reviews (`reviewed_by` becomes empty).
 
-Retention: an hourly task deletes conversations, messages and flags older than the retention setting, plus closed lesson sessions with no remaining messages (R7.2).
+Retention (R7.2), `app/records.py`: the app runs it at startup and then hourly, in one transaction under an advisory lock. The period is `settings.retention_days`, 30 when unset; a stored value that is not a whole number from 1 to 3650 is logged as an error and 30 is used. With cutoff = now minus the period, it deletes messages created before the cutoff (their flags go with them), then conversations started before the cutoff that have no messages left, then closed lesson sessions closed before the cutoff with no message in any of their conversations (their students and cookie sessions go with them). Open and paused sessions are never deleted. Deletion is per message, so a conversation that spans the cutoff keeps only its newer messages, and a flag on a deleted message goes whether or not it was reviewed. It logs counts only. A failed run is logged and the next one comes an hour later.
 
-Backup: `docker compose exec db pg_dump -Fc` writes a custom-format dump while the app keeps running. Restore stops the app, empties the database, runs `pg_restore` into it, and starts the app again. The admin page download runs the same dump. Model weights are not in the backup; they download again.
+Backup: `scripts/backup.sh [file]` runs `docker compose exec db pg_dump -Fc` while the app keeps running and writes the dump readable by its owner only, renaming it into place only once `pg_dump` has succeeded. Restore: `scripts/restore.sh [--yes] <file>` first checks the file with `pg_restore --list` (a file that is not a dump changes nothing), asks for confirmation, stops the app, then inside the db container unpacks the dump to SQL and runs `DROP SCHEMA public CASCADE`, `CREATE SCHEMA public AUTHORIZATION pg_database_owner` (the owner a new database has, so later dumps restore the same way) and that SQL with `psql --single-transaction`, so a failure leaves the database as it was. It starts the app again either way, then waits up to a minute for it to answer `/healthz` and says if it does not, for example when the backup is newer than the code. Startup migrations bring an older dump up to date. Retention runs as the app starts, so messages in a restored backup that are older than the retention period are deleted straight away. The admin page download (`GET /api/admin/backup`, admin only, audited) runs the same `pg_dump -Fc` from the app container, which carries the PostgreSQL 18 client from the PGDG apt repository at the same version as the `postgres` image; the two move together. The client is pinned to an exact package version, so a fresh build fails once PGDG replaces that version; the fix is to bump both pins in one release. It writes the dump to a temporary file and serves it only once `pg_dump` has succeeded, so a failure is an error, never a truncated file. Model weights are not in the backup; they download again.
 
-Export one student (R7.3): JSON of their conversations, messages and flags. Delete one student removes all of those rows. Both go in the audit log.
+Export one student (R7.3): JSON of their conversations, messages and flags (`GET /api/admin/students/{id}/export`). Delete one student removes all of those rows (`DELETE /api/admin/students/{id}`). Both go in the audit log, naming the student by id, code and lesson session, never by what they wrote. The retention period is set with `PUT /api/admin/retention` (1 to 3650 days, audited), and `GET /api/admin/audit` lists the audit log newest first, 100 rows a page.
 
 ## Teacher console
 
