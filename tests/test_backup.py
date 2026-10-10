@@ -23,6 +23,10 @@ if [ "$1" = compose ]; then
     exec)
         shift
         [ "$1" = -T ] && shift
+        if [ "$1" = app ]; then
+            [ -e "$SHIM_LOG.app_down" ] && exit 1
+            exit 0  # the app's health check
+        fi
         shift  # the service name
         exec "$REAL_DOCKER" exec -i -e POSTGRES_USER=postgres -e POSTGRES_DB="$TEST_DB" "$TEST_CONTAINER" "$@"
         ;;
@@ -54,8 +58,8 @@ def stack(empty_dsn, tmp_path):
     env = {**os.environ, "PATH": f"{shim}:{os.environ['PATH']}", "REAL_DOCKER": shutil.which("docker"),
            "TEST_CONTAINER": container, "TEST_DB": empty_dsn.rsplit("/", 1)[1], "SHIM_LOG": str(log)}
 
-    def run(script, *args, stdin=""):
-        return subprocess.run([str(ROOT / "scripts" / script), *args], env=env, cwd=tmp_path,
+    def run(script, *args, stdin="", **extra_env):
+        return subprocess.run([str(ROOT / "scripts" / script), *args], env={**env, **extra_env}, cwd=tmp_path,
                               input=stdin, capture_output=True, text=True)
 
     run.log = log
@@ -222,7 +226,7 @@ async def test_restore_twice_in_a_row(stack, empty_dsn):
 
 
 async def test_restore_a_backup_whose_schema_had_another_owner(stack, empty_dsn):
-    """pg_dump writes CREATE SCHEMA public when its owner is not the default."""
+    """pg_dump writes an owner change for public when its owner is not the default."""
     await populate(empty_dsn)
     with psycopg.connect(empty_dsn) as conn:
         conn.execute("ALTER SCHEMA public OWNER TO postgres")
@@ -231,3 +235,11 @@ async def test_restore_a_backup_whose_schema_had_another_owner(stack, empty_dsn)
     r = stack("restore.sh", "--yes", "out.dump")
     assert r.returncode == 0, r.stderr
     assert snapshot(empty_dsn) == before
+
+
+async def test_restore_reports_an_app_that_does_not_come_back(stack, empty_dsn):
+    await populate(empty_dsn)
+    assert stack("backup.sh", "out.dump").returncode == 0
+    Path(f"{stack.log}.app_down").touch()
+    r = stack("restore.sh", "--yes", "out.dump", HEALTH_TRIES="1")
+    assert r.returncode == 1 and "has not come back" in r.stderr
