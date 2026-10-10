@@ -5,3 +5,8 @@
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+
+# Etude scratch and workmux worktrees
+.etude/tmp/
+.etude/loop.local.md
+.worktrees/

@@ -1,5 +1,17 @@
 # Agent Instructions
 
+classroom-ai is an open-source (MIT) kit that turns a school's own GPUs into a private chat service for students. Start with [README.md](README.md) for the doc index.
+
+## Development workflow
+
+This repo uses Etude with the `dev-claude` and `dev-codex` profiles. Before any bead work, read [.etude/development.md](.etude/development.md) (the policy: phases, docs rule, risk classes, review, verification, delivery) and [.etude/models.md](.etude/models.md) (model IDs, worker and seat commands). A `claude-route` lane runs `dev-claude`; a `codex-route` lane runs `dev-codex`.
+
+Every change updates `docs/architecture.md` or the relevant doc in `docs/`, or records a no-docs rationale on the bead. Do not edit `docs/vision.md` or `docs/prd-*.md`. Docs prose: plain English, no em dashes, never name a person.
+
+## Build and test
+
+No code yet. Step 0 of [docs/implementation-plan.md](docs/implementation-plan.md) scaffolds the Python 3.14 Starlette app (pytest against a disposable Postgres in Docker), the Next.js app in `web/` (Vitest, later Playwright) and `compose.yml`, and must replace this paragraph with the exact commands.
+
 This project uses **bd** (beads) for issue tracking. Run `bd prime` for full workflow context.
 
 > **Architecture in one line:** Issues live in a local Dolt database
