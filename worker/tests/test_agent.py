@@ -344,3 +344,25 @@ def test_from_env_requires_settings(monkeypatch, tmp_path):
         agent.from_env()
     monkeypatch.setenv("MAX_CONCURRENT", "8")
     assert agent.from_env() is not None
+
+
+def test_server_root_certificate_is_trusted_when_present(monkeypatch, tmp_path):
+    import subprocess
+    ca = tmp_path / "server-ca.crt"
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256",
+                    "-nodes", "-keyout", str(tmp_path / "k"), "-out", str(ca), "-subj", "/CN=test root",
+                    "-days", "1"], check=True, capture_output=True)
+    for k, v in {"SERVER_URL": "https://s", "JOIN_TOKEN": "j", "BACKEND_URL": "http://b",
+                 "IDENTITY_PATH": str(tmp_path / "id.json")}.items():
+        monkeypatch.setenv(k, v)
+    created = {}
+    monkeypatch.setattr(agent, "create_app", lambda config, identity: created.setdefault("c", config))
+    monkeypatch.setenv("SERVER_CA", str(ca))
+    agent.from_env()
+    config = created.pop("c")
+    assert config.server_ca == str(ca)
+    context = agent.server_verify(config)
+    assert context.cert_store_stats()["x509_ca"] >= 1
+    monkeypatch.setenv("SERVER_CA", str(tmp_path / "missing.crt"))
+    agent.from_env()
+    assert created["c"].server_ca is None and agent.server_verify(created["c"]) is True
