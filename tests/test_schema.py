@@ -59,7 +59,7 @@ def test_deleting_a_student_removes_their_data_and_cookies(conn):
     ).fetchone()[0]
     conn.execute("INSERT INTO flags (message_id, category, action) VALUES (%s, 'Violent', 'block_flag')", (msg,))
     conn.execute(
-        "INSERT INTO auth_sessions (token_hash, student_id, expires_at) VALUES (%s, %s, now())",
+        "INSERT INTO auth_sessions (token_hash, student_id, csrf_token, expires_at) VALUES (%s, %s, 'c', now())",
         (hashlib.sha256(b"t").digest(), student),
     )
     conn.execute("DELETE FROM students WHERE id = %s", (student,))
@@ -71,7 +71,7 @@ def test_deleting_a_student_removes_their_data_and_cookies(conn):
 def test_auth_session_needs_exactly_one_principal(conn):
     with pytest.raises(psycopg.errors.CheckViolation):
         conn.execute(
-            "INSERT INTO auth_sessions (token_hash, expires_at) VALUES (%s, now())",
+            "INSERT INTO auth_sessions (token_hash, csrf_token, expires_at) VALUES (%s, 'c', now())",
             (hashlib.sha256(b"u").digest(),),
         )
 
@@ -85,7 +85,7 @@ def test_auth_session_refuses_two_principals(conn):
     ).fetchone()[0]
     with pytest.raises(psycopg.errors.CheckViolation):
         conn.execute(
-            "INSERT INTO auth_sessions (token_hash, staff_id, student_id, expires_at) VALUES (%s, %s, %s, now())",
+            "INSERT INTO auth_sessions (token_hash, staff_id, student_id, csrf_token, expires_at) VALUES (%s, %s, %s, 'c', now())",
             (hashlib.sha256(b"v").digest(), staff, student),
         )
 
