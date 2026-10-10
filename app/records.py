@@ -4,9 +4,20 @@ Backup and restore are scripts/backup.sh and scripts/restore.sh.
 """
 
 import asyncio
+import json
 import logging
+import os
+import tempfile
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+
+from psycopg.types.json import Jsonb
+from starlette.background import BackgroundTask
+from starlette.requests import Request
+from starlette.responses import FileResponse, JSONResponse, Response
+from starlette.routing import Route
+
+from app import auth
 
 log = logging.getLogger("app.records")
 
@@ -115,3 +126,128 @@ async def delete_student(conn, student_id: int) -> bool:
     """Delete one student; conversations, messages, flags and cookie sessions cascade."""
     cur = await conn.execute("DELETE FROM students WHERE id = %s RETURNING id", (student_id,))
     return await cur.fetchone() is not None
+
+
+# Admin endpoints. Audit rows for exports and deletions name the student by
+# id, code and lesson session only, never by conversation text.
+
+AUDIT_PAGE = 100
+
+
+async def json_object(request: Request) -> dict:
+    raw = await request.body()
+    if len(raw) > auth.MAX_BODY:
+        raise auth.HTTPError(413, "too_large")
+    try:
+        body = json.loads(raw or b"{}")
+    except ValueError:
+        raise auth.HTTPError(400, "bad_request") from None
+    if not isinstance(body, dict):
+        raise auth.HTTPError(400, "bad_request")
+    return body
+
+
+def path_id(request: Request, name: str) -> int:
+    try:
+        return int(request.path_params[name])
+    except ValueError:
+        raise auth.HTTPError(404, "not_found") from None
+
+
+async def get_audit(request: Request) -> JSONResponse:
+    await auth.require_staff(request, "admin")
+    before = request.query_params.get("before")
+    try:
+        before_id = int(before) if before else None
+    except ValueError:
+        raise auth.HTTPError(400, "bad_request") from None
+    async with request.app.state.pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT id, username, action, detail, created_at FROM audit"
+            " WHERE %s::bigint IS NULL OR id < %s ORDER BY id DESC LIMIT %s",
+            (before_id, before_id, AUDIT_PAGE))
+        rows = await cur.fetchall()
+    return JSONResponse({"audit": [
+        {"id": i, "username": u, "action": a, "detail": d, "time": iso(t)} for i, u, a, d, t in rows]})
+
+
+async def get_retention(request: Request) -> JSONResponse:
+    await auth.require_staff(request, "admin")
+    async with request.app.state.pool.connection() as conn:
+        return JSONResponse({"days": await retention_days(conn)})
+
+
+async def put_retention(request: Request) -> JSONResponse:
+    admin = await auth.require_staff(request, "admin")
+    days = (await json_object(request)).get("days")
+    if type(days) is not int or not 1 <= days <= MAX_RETENTION_DAYS:
+        raise auth.HTTPError(400, "bad_days")
+    async with request.app.state.pool.connection() as conn, conn.transaction():
+        await conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('retention_days', %s)"
+            " ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()", (Jsonb(days),))
+        await auth.audit(conn, admin["id"], admin["username"], "retention.set", {"days": days})
+    return JSONResponse({"days": days})
+
+
+def student_ref(record: dict) -> dict:
+    return {"student_id": record["student"]["id"], "code": record["student"]["code"],
+            "lesson_session_id": record["lesson_session"]["id"]}
+
+
+async def get_export(request: Request) -> Response:
+    admin = await auth.require_staff(request, "admin")
+    student_id = path_id(request, "student_id")
+    async with request.app.state.pool.connection() as conn, conn.transaction():
+        record = await export_student(conn, student_id)
+        if record is None:
+            raise auth.HTTPError(404, "not_found")
+        await auth.audit(conn, admin["id"], admin["username"], "student.export", student_ref(record))
+    return Response(json.dumps(record, indent=2), media_type="application/json", headers={
+        "Content-Disposition": f'attachment; filename="student-{student_id}.json"',
+        "Cache-Control": "no-store"})
+
+
+async def delete_student_endpoint(request: Request) -> JSONResponse:
+    admin = await auth.require_staff(request, "admin")
+    student_id = path_id(request, "student_id")
+    async with request.app.state.pool.connection() as conn, conn.transaction():
+        record = await export_student(conn, student_id)
+        if record is None or not await delete_student(conn, student_id):
+            raise auth.HTTPError(404, "not_found")
+        await auth.audit(conn, admin["id"], admin["username"], "student.delete", student_ref(record))
+    return JSONResponse({"deleted": student_id})
+
+
+async def get_backup(request: Request) -> Response:
+    """The same dump as scripts/backup.sh, written to a temporary file first so
+    a failed pg_dump never reaches the browser as a plausible download."""
+    admin = await auth.require_staff(request, "admin")
+    fd, path = tempfile.mkstemp(prefix="backup-", suffix=".dump")
+    os.close(fd)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "pg_dump", "-Fc", "-f", path, request.app.state.dsn,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+        _, err = await proc.communicate()
+        if proc.returncode != 0 or os.path.getsize(path) == 0:
+            log.error("backup failed: pg_dump exited %s", proc.returncode)
+            raise auth.HTTPError(500, "backup_failed")
+        async with request.app.state.pool.connection() as conn:
+            await auth.audit(conn, admin["id"], admin["username"], "backup.download", {})
+    except BaseException:
+        os.unlink(path)
+        raise
+    name = f"classroom-ai-{request.app.state.clock().strftime('%Y%m%d-%H%M%S')}.dump"
+    return FileResponse(path, media_type="application/octet-stream", filename=name,
+                        headers={"Cache-Control": "no-store"}, background=BackgroundTask(os.unlink, path))
+
+
+routes = [
+    Route("/api/admin/audit", get_audit, methods=["GET"]),
+    Route("/api/admin/retention", get_retention, methods=["GET"]),
+    Route("/api/admin/retention", put_retention, methods=["PUT"]),
+    Route("/api/admin/students/{student_id}/export", get_export, methods=["GET"]),
+    Route("/api/admin/students/{student_id}", delete_student_endpoint, methods=["DELETE"]),
+    Route("/api/admin/backup", get_backup, methods=["GET"]),
+]

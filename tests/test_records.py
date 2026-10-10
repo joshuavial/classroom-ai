@@ -116,8 +116,8 @@ async def test_retention_deletes_closed_sessions_with_nothing_left(pool):
         await d.conversation(await d.student(paused_old), NOW - 400 * DAY)
         closed_at_cutoff = await d.session("closed", cutoff)
         await conn.execute(
-            "INSERT INTO auth_sessions (token_hash, student_id, expires_at)"
-            " SELECT sha256(id::text::bytea), id, %s FROM students", (NOW + DAY,))
+            "INSERT INTO auth_sessions (token_hash, student_id, expires_at, csrf_token)"
+            " SELECT sha256(id::text::bytea), id, %s, 'x' FROM students", (NOW + DAY,))
 
     counts = await records.run_retention(pool, NOW)
 
@@ -231,8 +231,8 @@ async def populated_student(conn):
     other_conv = await d.conversation(other, NOW - DAY)
     await d.flag(await d.message(other_conv, NOW - DAY, "Ben's question"))
     await conn.execute(
-        "INSERT INTO auth_sessions (token_hash, student_id, expires_at)"
-        " SELECT sha256(id::text::bytea), id, %s FROM students", (NOW + DAY,))
+        "INSERT INTO auth_sessions (token_hash, student_id, expires_at, csrf_token)"
+        " SELECT sha256(id::text::bytea), id, %s, 'x' FROM students", (NOW + DAY,))
     return student, other
 
 

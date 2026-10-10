@@ -66,6 +66,7 @@ def create_app(dsn: str, clock=lambda: datetime.now(UTC)) -> Starlette:
             await auth.prepare()
             app.state.pool = pool
             app.state.clock = clock
+            app.state.dsn = dsn
             retention = asyncio.create_task(records.retention_loop(pool, clock))
             try:
                 yield
@@ -77,7 +78,7 @@ def create_app(dsn: str, clock=lambda: datetime.now(UTC)) -> Starlette:
             await pool.close()
 
     app = Starlette(
-        routes=[Route("/healthz", healthz), *auth.routes],
+        routes=[Route("/healthz", healthz), *auth.routes, *records.routes],
         middleware=[Middleware(auth.CSRFMiddleware)],
         exception_handlers={
             auth.HTTPError: auth.http_error,
