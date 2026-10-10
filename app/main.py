@@ -1,5 +1,6 @@
 """The Python API and gateway: /healthz and the JSON API under /api/."""
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -15,7 +16,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from app import auth, classes, db, students, workers
+from app import auth, classes, db, records, students, workers
 
 log = logging.getLogger("app")
 
@@ -72,14 +73,22 @@ def create_app(
             app.state.pool = pool
             app.state.clock = clock
             app.state.router = workers.Router()
-            async with httpx.AsyncClient(transport=worker_transport) as worker_client:
-                app.state.worker_client = worker_client
-                yield
+            app.state.dsn = dsn
+            retention = asyncio.create_task(records.retention_loop(pool, clock))
+            try:
+                async with httpx.AsyncClient(transport=worker_transport) as worker_client:
+                    app.state.worker_client = worker_client
+                    yield
+            finally:
+                retention.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await retention
         finally:
             await pool.close()
 
     app = Starlette(
-        routes=[Route("/healthz", healthz), *auth.routes, *classes.routes, *students.routes, *workers.routes],
+        routes=[Route("/healthz", healthz), *auth.routes, *classes.routes, *students.routes,
+                *workers.routes, *records.routes],
         middleware=[Middleware(auth.CSRFMiddleware)],
         exception_handlers={
             auth.HTTPError: auth.http_error,
