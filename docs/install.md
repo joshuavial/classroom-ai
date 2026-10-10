@@ -127,6 +127,19 @@ Every service in the compose files has `restart: unless-stopped`, so the stack c
 
 If the stack does not come up without a sign-in, the fallbacks are signing `classroomai` in automatically with the screen locked (weaker for a shared lab PC), or running the server on Ubuntu Server, where none of this is needed.
 
+## Join a worker
+
+A worker is a machine with a GPU running a model server and the agent. On it, install Docker Engine (inside WSL2 Ubuntu on Windows, as above, plus the NVIDIA Container Toolkit for the llama-server recipe; on a Mac any Docker-compatible runtime), clone the repository, and set up a model server from [worker/recipes/README.md](../worker/recipes/README.md).
+
+1. On the server's admin page, under Workers, copy the join command. It sets `SERVER_URL` and `JOIN_TOKEN` and runs `docker compose -f worker/compose.yml up -d --build`.
+2. With HTTPS on, copy the server's root certificate (see [Trust the certificate](#trust-the-certificate)) to `worker/server-ca.crt` in the worker's checkout first, so the agent can check the server. **untested** with HTTPS end to end.
+3. In the worker's `classroom-ai` folder, run the command. Add `BACKEND_URL=...` in front of it if the model server is not Ollama on the same machine.
+4. Within a few seconds the admin page lists the worker as up, with its models. New models start switched off; turn them on under Models.
+
+Then let only the server reach the worker's port 8081, as [worker/recipes/README.md](../worker/recipes/README.md) describes. Joining a worker from a second machine has not been run yet (**untested**); joining one on the server's own Mac has.
+
+The agent keeps its identity in a Docker volume, so restarting it keeps the same worker. Removing a worker on the admin page stops that worker ID for good. The machine can join again only as a new worker: delete its `agent_data` volume and run the current join command from the admin page.
+
 ## Upgrade
 
 ```sh
