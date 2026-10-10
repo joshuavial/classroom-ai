@@ -298,6 +298,35 @@ async def enabled_models(conn) -> set[str]:
     return {row[0] for row in await cur.fetchall()}
 
 
+# Admin views. Never include a worker's API key.
+
+
+async def worker_list(conn, now: datetime, router: "Router") -> list[dict]:
+    generation = (await join_token(conn))["generation"]
+    return [{
+        "id": w.id,
+        "address": w.address,
+        "status": "removed" if w.removed else "up" if is_live(w, generation, now) else "down",
+        "models": w.models,
+        "capacity": w.capacity,
+        "in_flight": router.in_flight[w.id],
+        "last_heartbeat": w.last_heartbeat.isoformat(),
+    } for w in await list_workers(conn)]
+
+
+async def model_list(conn, now: datetime) -> list[dict]:
+    generation = (await join_token(conn))["generation"]
+    offered = {m for w in await list_workers(conn) if is_live(w, generation, now) for m in w.models}
+    cur = await conn.execute("SELECT name, enabled FROM models ORDER BY name")
+    return [{"name": name, "enabled": enabled, "offered": name in offered}
+            for name, enabled in await cur.fetchall()]
+
+
+async def set_model(conn, name: str, enabled: bool) -> bool:
+    cur = await conn.execute("UPDATE models SET enabled = %s WHERE name = %s RETURNING name", (enabled, name))
+    return await cur.fetchone() is not None
+
+
 # Join command
 
 
