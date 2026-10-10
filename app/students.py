@@ -74,7 +74,12 @@ async def join(request: Request) -> JSONResponse:
     # the limit, so a class behind one address is not refused.
     ip = client_ip(request)
     limiter = request.app.state.join_limiter
-    if not limiter.allow(ip):
+    # A looser cap on every attempt, so one valid code cannot be used to
+    # create cookie sessions without limit.
+    if not request.app.state.join_total_limiter.allow(ip):
+        raise HTTPError(429, "too_many_attempts")
+    attempt = limiter.admit(ip)
+    if attempt is None:
         raise HTTPError(429, "too_many_attempts")
     body = await json_body(request)
     code = body.get("code")
@@ -105,7 +110,7 @@ async def join(request: Request) -> JSONResponse:
             student["name"] = name
         response = JSONResponse(public(student))
         await start_session(conn, request, response, student_id=student["id"])
-    limiter.forgive(ip)
+    limiter.forgive(ip, attempt)
     return response
 
 

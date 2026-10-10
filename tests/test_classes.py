@@ -224,6 +224,16 @@ async def test_a_class_behind_one_address_all_joins(app, teacher):
         assert r.status_code == 200, i
 
 
+async def test_successful_joins_have_a_looser_cap(app, teacher):
+    _, roster = await new_lesson(teacher, 1)
+    app.state.join_total_limiter.limit = 5
+    try:
+        statuses = [(await join(app, roster[0]["code"], "Aroha"))[1].status_code for _ in range(6)]
+    finally:
+        app.state.join_total_limiter.limit = 300
+    assert statuses == [200] * 5 + [429]
+
+
 async def test_wrong_codes_still_use_up_the_limit(app, teacher):
     _, roster = await new_lesson(teacher, 1)
     taken = {r["code"] for r in roster}
@@ -235,15 +245,49 @@ async def test_wrong_codes_still_use_up_the_limit(app, teacher):
     assert (r.status_code, r.json()) == (429, {"error": "too_many_attempts"})
 
 
-def test_limiter_forgive_drops_the_newest_attempt():
+def test_forgive_removes_only_that_attempt():
     now = [0.0]
     limiter = auth.RateLimiter(limit=2, window=60, clock=lambda: now[0])
-    assert limiter.allow("a") and limiter.allow("a") and not limiter.allow("a")
-    limiter.forgive("a")
-    assert limiter.allow("a") and not limiter.allow("a")
-    limiter.forgive("nobody")  # no attempts: nothing to drop
-    now[0] = 61
-    assert limiter.allow("a")
+    first = limiter.admit("a")
+    assert first and limiter.admit("a") and limiter.admit("a") is None
+    limiter.forgive("a", first)
+    assert limiter.admit("a") and limiter.admit("a") is None
+    limiter.forgive("nobody", first)  # unknown key: nothing happens
+
+
+def test_overlapping_success_cannot_free_a_failure():
+    """A join admitted first and finishing last must remove its own entry,
+    never a later failed guess, or more than the limit of failures get in."""
+    now = [0.0]
+    limiter = auth.RateLimiter(limit=30, window=60, clock=lambda: now[0])
+    success = limiter.admit("nat")  # a real join, still in flight
+    failures = 0
+    for _ in range(40):
+        now[0] += 0.01
+        if limiter.admit("nat"):
+            failures += 1
+    assert failures == 29  # the in-flight join holds one place
+    limiter.forgive("nat", success)
+    now[0] += 0.01
+    while limiter.admit("nat"):
+        failures += 1
+    assert failures == 30
+    # Just after where the success's own entry would expire, all 30 failures
+    # are still in the window, so nothing more gets in. (Forgiving the newest
+    # entry instead would have left the success there, freeing a place now.)
+    now[0] = 60.005
+    assert limiter.admit("nat") is None
+
+
+def test_forgiving_an_expired_attempt_leaves_newer_ones():
+    now = [0.0]
+    limiter = auth.RateLimiter(limit=3, window=60, clock=lambda: now[0])
+    success = limiter.admit("nat")
+    now[0] = 61  # the success's entry has left the window by the time it finishes
+    a, b, c = limiter.admit("nat"), limiter.admit("nat"), limiter.admit("nat")
+    assert a and b and c and limiter.admit("nat") is None
+    limiter.forgive("nat", success)
+    assert limiter.admit("nat") is None  # three failures still counted
 
 
 async def test_closing_invalidates_codes_and_cookies(app, teacher, dsn):

@@ -6,6 +6,7 @@ See docs/architecture.md "Identity and access".
 import asyncio
 import hashlib
 import hmac
+import itertools
 import json
 import logging
 import re
@@ -115,13 +116,15 @@ class RateLimiter:
 
     def __init__(self, limit: int = 10, window: float = 60.0, clock=time.monotonic, max_keys: int = 10_000):
         self.limit, self.window, self.clock, self.max_keys = limit, window, clock, max_keys
-        self.hits: dict[str, deque[float]] = {}
+        self.hits: dict[str, deque[tuple[float, int]]] = {}
+        self.serial = itertools.count()
 
-    def allow(self, key: str) -> bool:
+    def admit(self, key: str) -> tuple[float, int] | None:
+        """Count an attempt. Returns a token for forgive(), or None if over the limit."""
         now = self.clock()
         for k in list(self.hits):
             q = self.hits[k]
-            while q and q[0] <= now - self.window:
+            while q and q[0][0] <= now - self.window:
                 q.popleft()
             if not q:
                 del self.hits[k]
@@ -129,16 +132,20 @@ class RateLimiter:
             self.hits.clear()
         q = self.hits.setdefault(key, deque())
         if len(q) >= self.limit:
-            return False
-        q.append(now)
-        return True
+            return None
+        token = (now, next(self.serial))
+        q.append(token)
+        return token
 
-    def forgive(self, key: str) -> None:
-        """Drop this key's newest attempt: for limits on failures, the caller
-        counts every attempt when admitted and forgives the ones that succeed."""
+    def allow(self, key: str) -> bool:
+        return self.admit(key) is not None
+
+    def forgive(self, key: str, token: tuple[float, int]) -> None:
+        """Uncount one admitted attempt, for limits on failures only. Does
+        nothing if that attempt has already left the window."""
         q = self.hits.get(key)
-        if q:
-            q.pop()
+        if q and token in q:
+            q.remove(token)
 
     def reset(self) -> None:
         self.hits.clear()

@@ -112,7 +112,8 @@ def create_app(
     )
     app.state.limiter = auth.RateLimiter()
     # Student codes can be guessed: 30 tries a minute per address (architecture).
-    app.state.join_limiter = auth.RateLimiter(limit=30)
+    app.state.join_limiter = auth.RateLimiter(limit=30)  # failed attempts
+    app.state.join_total_limiter = auth.RateLimiter(limit=300)  # every attempt
     return app
 
 
