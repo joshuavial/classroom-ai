@@ -1,0 +1,8 @@
+# HTTPS on a school server. scripts/init-env.sh <server name> turns this on
+# by setting COMPOSE_FILE=compose.yml:compose.https.yml in .env, so a plain
+# `docker compose up -d` uses both files. Development leaves it off and
+# needs only port 80.
+services:
+  caddy:
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:443:443"

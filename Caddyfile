@@ -1,5 +1,17 @@
-# Plain HTTP on localhost for development. TLS comes with step 9.
-:80 {
+# SERVER_NAME in .env is the address students type: a local DNS name or the
+# server's IP address. Caddy then serves HTTPS on 443 with a certificate from
+# its own local authority (no internet needed) and redirects 80 to 443.
+# Unset, as in development, compose sets SITE_ADDRESS to :80: plain HTTP.
+{
+	# tls internal for every site: certificates from Caddy's local CA,
+	# whose root lives in the caddy_data volume.
+	local_certs
+	skip_install_trust
+	# Browsers send no server name when the address is an IP; use ours.
+	default_sni {$SERVER_NAME}
+}
+
+{$SITE_ADDRESS} {
 	handle /api/* {
 		reverse_proxy app:8000
 	}

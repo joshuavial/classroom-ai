@@ -1,0 +1,9 @@
+# Copy to C:\Users\<stack account>\.wslconfig, then run `wsl --shutdown`.
+# Mirrored networking lets lab PCs reach the stack's published ports.
+# The idle timeouts stop WSL shutting the stack down when nobody is signed in.
+[wsl2]
+networkingMode=mirrored
+vmIdleTimeout=-1
+
+[general]
+instanceIdleTimeout=-1

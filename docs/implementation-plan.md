@@ -146,6 +146,8 @@ Requirements: R1.1, R1.3, R1.4, R1.6, R2.6, acceptance 1, 2, 5, 8, 11.
 
 Checks: the Windows test machine run against the acceptance list, recorded in `docs/pilot-checks.md`. Upgrade from the previous commit keeps data.
 
+Delivered so far (2026-10-10, checked on a Mac): Caddy `tls internal` for `SERVER_NAME` with plain HTTP in development, `scripts/init-env.sh <name>`, `docs/install.md` (server, Docker Engine in WSL2, HTTPS and certificate trust, start on boot, upgrade), `scripts/windows/`, the README quick start and `LICENSES.md` with the default models. Upgrade from the previous commit kept data. Still to do: the root certificate download on the admin page (needs step 1), the install sections for backup (with step 8) and worker join and firewall (with step 2), and the Windows test machine run, which also tests every step `docs/install.md` marks untested.
+
 ## 10. Load test
 
 Depends on 9.
