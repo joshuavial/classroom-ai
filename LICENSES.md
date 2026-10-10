@@ -1,6 +1,6 @@
 # Licences
 
-Every component the project ships or runs, with its licence. Started in step 0 and completed in step 9, including the default models.
+Every component the project ships or runs, with its licence (acceptance 11). Licences were checked at their source repositories and model cards on 2026-10-10. Components arrive with the step that adds them; a step that adds one adds its row here.
 
 ## Server runtime
 
@@ -19,6 +19,29 @@ Every component the project ships or runs, with its licence. Started in step 0 a
 | React, React DOM | 19.3.0 | MIT |
 
 Indirect Python dependencies (from `uv.lock`) include anyio, h11, httpcore, idna, certifi (MPL-2.0), click and typing-extensions, all OSI-approved.
+
+## Models and model servers
+
+| Component | Version | Licence |
+| --- | --- | --- |
+| Gemma 4 (E2B-it, E4B-it, 12B-it), the suggested chat models, as `google/gemma-4-*-it` and the `ggml-org/gemma-4-*-it-GGUF` builds | 4 | Apache-2.0 |
+| Qwen3Guard-Gen-0.6B, the default guard model, as `Qwen/Qwen3Guard-Gen-0.6B` and the `mradermacher/Qwen3Guard-Gen-0.6B-GGUF` build | Gen | Apache-2.0 |
+| llama.cpp `llama-server` (`ghcr.io/ggml-org/llama.cpp` images) | the build pinned in the compose files that use it | MIT |
+| Ollama, optional on workers, installed by the school | any | MIT |
+
+## Host software the install uses
+
+Installed by the school from the vendors' own repositories, not shipped with this project.
+
+| Component | Licence |
+| --- | --- |
+| Docker Engine (moby) and the Docker CLI | Apache-2.0 |
+| Docker Compose plugin | Apache-2.0 |
+| NVIDIA Container Toolkit, on GPU workers in Docker | Apache-2.0 |
+| Windows Subsystem for Linux | MIT, except a few WSL1 components |
+| Ubuntu | free for organisations' internal use under Canonical's IP policy; made of open-source packages under their own licences |
+
+The NVIDIA driver for Windows is proprietary. It is the GPU vendor's driver, which any use of the card needs, not part of this project.
 
 ## Development and build only
 

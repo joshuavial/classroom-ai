@@ -71,7 +71,8 @@ Caddyfile
 Dockerfile                app image (Python API)
 .dockerignore             allowlist: only pyproject.toml, uv.lock and app/ reach the app image
 pyproject.toml            pinned Python dependencies, with uv.lock
-scripts/init-env.sh       writes .env with generated database credentials, once
+scripts/init-env.sh       writes .env once: generated database credentials, and with a server name the HTTPS settings
+compose.https.yml         adds port 443 for a school server; .env turns it on through COMPOSE_FILE
 app/
   main.py                 routes and startup (create_app, and from_env for uvicorn --factory)
   db.py                   Postgres connection pool, migrations, queries
@@ -261,10 +262,10 @@ Live view: the app publishes an event per stored message, flag, join and state c
 
 ## Network and TLS
 
-- Caddy publishes 443 and redirects 80. `SERVER_NAME` in `.env` sets the hostname (a local DNS name or the IP address).
-- `tls internal` creates a local CA in the `caddy_data` volume. The admin page links to download the root certificate, and `docs/install.md` shows how to trust it on Windows, macOS, iOS, Android and ChromeOS. Until a device trusts it, the browser shows a warning (PRD risk). iOS needs the profile installed and then enabled under Certificate Trust Settings. Managed Chromebooks take it through the Google Admin console. Android trust in Chrome is unverified and is a pilot check.
+- Caddy publishes 443 and redirects 80. `SERVER_NAME` in `.env` sets the hostname (a local DNS name or the IP address), and `BIND_ADDRESS` the address the ports are published on: `0.0.0.0` on a school server, `127.0.0.1` when unset. `scripts/init-env.sh <name>` writes both, plus `COMPOSE_FILE=compose.yml:compose.https.yml` so compose also publishes 443; development publishes only port 80. Compose passes Caddy `SITE_ADDRESS` (the name, or `:80` when there is none) and `SERVER_NAME`; the Caddyfile's `default_sni` makes Caddy present the server's certificate to browsers that send no name, which is what they do for an IP address. The certificate covers only `SERVER_NAME`.
+- `tls internal` (the global `local_certs` option in `Caddyfile`) creates a local CA in the `caddy_data` volume. The root is valid for ten years. Until the admin page has a download link, `docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt .` fetches the root certificate, and `docs/install.md` shows how to trust it on Windows, macOS, iOS, Android and ChromeOS. Until a device trusts it, the browser shows a warning (PRD risk). iOS needs the profile installed and then enabled under Certificate Trust Settings. Managed Chromebooks take it through the Google Admin console. Android trust in Chrome is unverified and is a pilot check.
 - Caddy routes `/api/*`, including the SSE streams, and `/healthz` to `app`, and everything else to `web`. Both share one origin, so the session cookie and the CSRF header work unchanged. Browsers never call the app on another origin, and neither `app` nor `web` publishes a port.
-- On the Mac in development, `http://localhost` skips TLS, and `compose.yml` publishes port 80 on 127.0.0.1 only until step 9 adds TLS. `HTTP_PORT` in the environment or `.env` picks another host port, for a second stack on one machine.
+- In development `SERVER_NAME` is unset: Caddy serves plain HTTP on `http://localhost`, published on 127.0.0.1 only. `HTTP_PORT` and `HTTPS_PORT` in the environment or `.env` pick other host ports, for a second stack on one machine or when a port is already taken.
 - The guard and the database are on the internal compose network and publish no ports.
 
 ## Tests
