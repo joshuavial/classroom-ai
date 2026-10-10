@@ -526,3 +526,38 @@ def test_join_command_without_certificate_or_worker_url():
     assert c["bash"] == "SERVER_URL=http://10.0.0.2 JOIN_TOKEN=tok docker compose -f worker/compose.yml up -d --build"
     assert c["powershell"] == ("$env:SERVER_URL='http://10.0.0.2'; $env:JOIN_TOKEN='tok'; "
                                "docker compose -f worker/compose.yml up -d --build")
+
+
+# Admin views
+
+
+async def test_worker_list_shows_status_and_never_the_key(env):
+    live, key = await env.join("10.0.0.5")
+    env.clock.now = T0 + timedelta(seconds=30)
+    later, _ = await env.join("10.0.0.6")
+    gone, _ = await env.join("10.0.0.7")
+    async with env.pool.connection() as conn:
+        await workers.remove_worker(conn, gone)
+    env.app.state.router.in_flight[later] = 2
+    env.clock.now = T0 + timedelta(seconds=50)
+    async with env.pool.connection() as conn:
+        listed = {w["id"]: w for w in await workers.worker_list(conn, env.clock(), env.app.state.router)}
+    assert {i: w["status"] for i, w in listed.items()} == {live: "down", later: "up", gone: "removed"}
+    assert listed[later] == {
+        "id": later, "address": "http://10.0.0.6:8081", "status": "up", "models": ["gemma-4-e2b-it"],
+        "capacity": 4, "in_flight": 2, "last_heartbeat": (T0 + timedelta(seconds=30)).isoformat()}
+    assert key not in json.dumps(listed) and "api_key" not in json.dumps(listed)
+
+
+async def test_model_list_and_toggle(env):
+    worker_id, key = await env.join()
+    assert (await env.beat(worker_id, key, models=["a", "b"])).status_code == 204
+    async with env.pool.connection() as conn:
+        assert await workers.set_model(conn, "a", True)
+        assert not await workers.set_model(conn, "nope", True)
+        assert await workers.model_list(conn, env.clock()) == [
+            {"name": "a", "enabled": True, "offered": True},
+            {"name": "b", "enabled": False, "offered": True},
+            {"name": "gemma-4-e2b-it", "enabled": False, "offered": False}]
+        env.clock.now = T0 + timedelta(seconds=45)
+        assert [m["offered"] for m in await workers.model_list(conn, env.clock())] == [False, False, False]
