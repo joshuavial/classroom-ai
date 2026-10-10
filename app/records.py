@@ -239,7 +239,36 @@ async def delete_student_endpoint(request: Request) -> JSONResponse:
     return JSONResponse({"deleted": student_id})
 
 
-async def get_backup(request: Request) -> Response:
+STUDENT_PAGE = 100
+
+
+async def get_students(request: Request) -> JSONResponse:
+    """Every student row, removed ones too, so any student's data can be
+    exported or deleted. Newest first; q matches name or code."""
+    await auth.require_staff(request, "admin")
+    q = request.query_params.get("q", "").strip()
+    if len(q) > 100:
+        raise auth.HTTPError(400, "bad_request")
+    # Escape LIKE wildcards so q is matched as typed.
+    pattern = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    async with request.app.state.pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT st.id, st.code, st.name, st.removed, s.id, s.opened_at, c.name,"
+            "  (SELECT count(*) FROM conversations cv JOIN messages m ON m.conversation_id = cv.id"
+            "   WHERE cv.student_id = st.id)"
+            " FROM students st JOIN lesson_sessions s ON s.id = st.lesson_session_id"
+            " JOIN classes c ON c.id = s.class_id"
+            " WHERE %s = '' OR st.name ILIKE %s OR st.code LIKE %s"
+            " ORDER BY st.id DESC LIMIT %s",
+            (q, pattern, pattern, STUDENT_PAGE))
+        rows = await cur.fetchall()
+    return JSONResponse({"students": [
+        {"id": i, "code": code, "name": name, "removed": removed, "lesson_session_id": sid,
+         "opened": iso(opened), "class": cls, "messages": n}
+        for i, code, name, removed, sid, opened, cls, n in rows]})
+
+
+async def post_backup(request: Request) -> Response:
     """The same dump as scripts/backup.sh, written to a temporary file first so
     a failed pg_dump never reaches the browser as a plausible download."""
     admin = await auth.require_staff(request, "admin")
@@ -283,5 +312,7 @@ routes = [
     Route("/api/admin/retention", put_retention, methods=["PUT"]),
     Route("/api/admin/students/{id}/export", get_export, methods=["GET"]),
     Route("/api/admin/students/{id}", delete_student_endpoint, methods=["DELETE"]),
-    Route("/api/admin/backup", get_backup, methods=["GET"]),
+    Route("/api/admin/students", get_students, methods=["GET"]),
+    # POST so a link on another site cannot start a dump with the admin's cookie.
+    Route("/api/admin/backup", post_backup, methods=["POST"]),
 ]

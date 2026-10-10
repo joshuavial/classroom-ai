@@ -140,6 +140,27 @@ Then let only the server reach the worker's port 8081, as [worker/recipes/README
 
 The agent keeps its identity in a Docker volume, so restarting it keeps the same worker. Removing a worker on the admin page stops that worker ID for good. The machine can join again only as a new worker: delete its `agent_data` volume and run the current join command from the admin page.
 
+## Back up and restore
+
+Back up regularly and before every upgrade. On the server, in `~/classroom-ai`:
+
+```sh
+./scripts/backup.sh                       # writes classroom-ai-<date>-<time>.dump here
+./scripts/backup.sh /path/to/file.dump    # or to a file you name
+```
+
+The admin page's Records section can also download a backup. Either way the file holds every account (with password hashes), setting, worker key and student conversation, so keep it where only staff can read it, and off the server too, so a failed disk does not take the backup with it.
+
+To restore, with the stack running:
+
+```sh
+./scripts/restore.sh /path/to/file.dump
+```
+
+It checks the file is a backup, asks you to type `yes`, stops the app, replaces the whole database in one transaction, and starts the app again. If anything fails, the database is left as it was. Restoring brings back everything in the file and drops anything newer.
+
+The app deletes messages older than the retention period as soon as it starts, so restoring a backup older than that period loses those messages again. To read old messages without losing them, do not start the app on that backup: load it into a separate PostgreSQL database with `pg_restore` and read it there with `psql`.
+
 ## Upgrade
 
 ```sh

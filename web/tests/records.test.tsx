@@ -4,11 +4,19 @@ import Records from "@/components/Records";
 
 type Call = { path: string; method: string; body: unknown };
 let calls: Call[];
-let routes: Record<string, (call: Call) => { status?: number; body: unknown }>;
+type Out = { status?: number; body: unknown; headers?: Record<string, string>; raw?: boolean };
+let routes: Record<string, (call: Call) => Out>;
+let saved: string[];
 
 beforeEach(() => {
   calls = [];
   routes = {};
+  saved = [];
+  // jsdom has no object URLs.
+  Object.assign(URL, { createObjectURL: () => "blob:test", revokeObjectURL: () => {} });
+  vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+    saved.push(this.download);
+  });
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string, init: RequestInit) => {
@@ -19,8 +27,9 @@ beforeEach(() => {
       };
       calls.push(call);
       const handler = routes[`${call.method} ${call.path}`];
-      const out = handler ? handler(call) : { status: 404, body: { error: "not_found" } };
-      return new Response(JSON.stringify(out.body), { status: out.status ?? 200 });
+      const out: Out = handler ? handler(call) : { status: 404, body: { error: "not_found" } };
+      const body = out.raw ? (out.body as string) : JSON.stringify(out.body);
+      return new Response(body, { status: out.status ?? 200, headers: out.headers });
     }),
   );
 });
@@ -46,7 +55,6 @@ test("shows retention, the backup link and the audit log with paging", async () 
   routes["GET /admin/audit?before=101"] = () => ({ body: { audit: [row(100), row(99)] } });
   render(<Records />);
   expect(await screen.findByDisplayValue("30")).toBeInTheDocument();
-  expect(screen.getByRole("link", { name: "Download a backup" })).toHaveAttribute("href", "/api/admin/backup");
   expect(await screen.findByText(JSON.stringify({ model: "m200" }))).toBeInTheDocument();
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: "Older entries" }));
@@ -83,4 +91,76 @@ test("a refused retention value says so", async () => {
   fireEvent.change(input, { target: { value: "40" } });
   await submit(input.closest("form")!);
   expect(await screen.findByText("Use a whole number of days from 1 to 3650.")).toBeInTheDocument();
+});
+
+const students = [
+  { id: 2, code: "222222", name: "Ben", removed: true, lesson_session_id: 1, opened: "2026-10-10T09:00:00Z",
+    class: "Year 9", messages: 1 },
+  { id: 1, code: "111111", name: "Aroha", removed: false, lesson_session_id: 1, opened: "2026-10-10T09:00:00Z",
+    class: "Year 9", messages: 2 },
+];
+
+function base() {
+  routes["GET /admin/retention"] = () => ({ body: { days: 30 } });
+  routes["GET /admin/audit"] = () => ({ body: { audit: [] } });
+  routes["GET /admin/students?q="] = () => ({ body: { students } });
+}
+
+test("backup is a POST download, and a failure says so", async () => {
+  base();
+  let ok = true;
+  routes["POST /admin/backup"] = () =>
+    ok
+      ? { raw: true, body: "PGDMP...", headers: { "Content-Disposition": 'attachment; filename="classroom-ai-1.dump"' } }
+      : { status: 500, body: { error: "backup_failed" } };
+  render(<Records />);
+  await screen.findByDisplayValue("30");
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Download a backup" }));
+  });
+  expect(calls.find((c) => c.path === "/admin/backup")?.method).toBe("POST");
+  expect(saved).toEqual(["classroom-ai-1.dump"]);
+  ok = false;
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Download a backup" }));
+  });
+  expect(await screen.findByText(/The backup failed/)).toBeInTheDocument();
+  expect(saved).toEqual(["classroom-ai-1.dump"]);
+});
+
+test("students are listed, removed ones marked, and searched", async () => {
+  base();
+  routes["GET /admin/students?q=ben"] = () => ({ body: { students: [students[0]] } });
+  render(<Records />);
+  expect(await screen.findByText("Aroha")).toBeInTheDocument();
+  expect(screen.getByText(/Ben/).textContent).toContain("(removed)");
+  fireEvent.change(screen.getByLabelText("Find a student by name or code"), { target: { value: "ben" } });
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Find" }));
+  });
+  expect(screen.queryByText("Aroha")).not.toBeInTheDocument();
+});
+
+test("export downloads the file; delete asks first", async () => {
+  base();
+  routes["GET /admin/students/1/export"] = () => ({
+    raw: true, body: "{}", headers: { "Content-Disposition": 'attachment; filename="student-1.json"' } });
+  routes["DELETE /admin/students/1"] = () => ({ body: { deleted: 1 } });
+  const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+  render(<Records />);
+  await screen.findByText("Aroha");
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Export Aroha" }));
+  });
+  expect(saved).toEqual(["student-1.json"]);
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Delete Aroha" }));
+  });
+  expect(calls.some((c) => c.method === "DELETE")).toBe(false);
+  expect(confirm.mock.calls[0][0]).toContain("all 2 of their messages");
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Delete Aroha" }));
+  });
+  expect(calls.find((c) => c.method === "DELETE")?.path).toBe("/admin/students/1");
+  expect(await screen.findByText("Deleted Aroha.")).toBeInTheDocument();
 });

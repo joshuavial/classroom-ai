@@ -67,7 +67,7 @@ async def student(app):
 
 ENDPOINTS = [("GET", "/api/admin/audit"), ("GET", "/api/admin/retention"), ("PUT", "/api/admin/retention"),
              ("GET", "/api/admin/students/1/export"), ("DELETE", "/api/admin/students/1"),
-             ("GET", "/api/admin/backup")]
+             ("POST", "/api/admin/backup"), ("GET", "/api/admin/students")]
 
 
 @pytest.mark.parametrize("method,path", ENDPOINTS)
@@ -148,7 +148,7 @@ async def test_backup_download_is_a_restorable_dump(env, tmp_path, monkeypatch):
     await student(app)
     admin = await client("admin")
     before = snapshot(dsn)
-    r = await admin.get("/api/admin/backup")
+    r = await admin.post("/api/admin/backup", headers=await csrf(admin))
     assert r.status_code == 200
     assert r.headers["cache-control"] == "no-store"
     assert r.headers["content-disposition"] == 'attachment; filename="classroom-ai-20261010-120000.dump"'
@@ -174,7 +174,38 @@ async def test_failed_backup_is_an_error_not_a_file(env, tmp_path, monkeypatch):
     (tmp_path / "pg_dump").write_text("#!/bin/sh\nprintf partial > \"$3\"\nexit 1\n")
     monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
     admin = await client("admin")
-    r = await admin.get("/api/admin/backup")
+    r = await admin.post("/api/admin/backup", headers=await csrf(admin))
     assert (r.status_code, r.json()) == (500, {"error": "backup_failed"})
     assert not list(tmp_path.glob("backup-*"))
     assert audit(dsn) == []
+
+
+async def test_backup_needs_post_with_csrf(env):
+    app, dsn, client = env
+    admin = await client("admin")
+    assert (await admin.get("/api/admin/backup")).status_code == 405
+    assert (await admin.post("/api/admin/backup")).status_code == 403
+    assert audit(dsn) == []
+
+
+async def test_student_list_includes_removed_and_searches(env):
+    app, dsn, client = env
+    student_id, other = await student(app)
+    with psycopg.connect(dsn) as conn:
+        conn.execute("UPDATE students SET removed = true WHERE id = %s", (other,))
+        conn.execute("UPDATE students SET name = %s WHERE id = %s", ("50%_off", student_id))
+    admin = await client("admin")
+    listed = (await admin.get("/api/admin/students")).json()["students"]
+    assert [s["id"] for s in listed] == [other, student_id]  # newest first
+    assert listed[0]["removed"] is True and listed[0]["name"] == "Ben"
+    assert listed[1] | {"opened": None} == {
+        "id": student_id, "code": "111111", "name": "50%_off", "removed": False,
+        "lesson_session_id": listed[1]["lesson_session_id"], "opened": None, "class": "Class 1", "messages": 2}
+    async def find(q):
+        return [s["id"] for s in (await admin.get("/api/admin/students", params={"q": q})).json()["students"]]
+    assert await find("ben") == [other]
+    assert await find("222222") == [other]
+    assert await find("%_") == [student_id]  # wildcards matched as typed
+    assert await find("_") == [student_id]
+    assert await find("nobody") == []
+    assert (await admin.get("/api/admin/students", params={"q": "x" * 101})).status_code == 400
