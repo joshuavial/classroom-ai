@@ -415,3 +415,73 @@ async def test_export_sees_one_snapshot_while_retention_commits(pool, empty_dsn)
     assert first["text"] == "What is a volcano?"
     assert first["flags"] == [{"category": "violence", "action": "allow_flag",
                                "time": (NOW - 2 * DAY).isoformat(), "reviewed": False}]
+
+
+async def hold(dsn, sql, params):
+    """Another transaction holding a lock, left open until committed."""
+    other = await psycopg.AsyncConnection.connect(dsn)
+    await other.execute(sql, params)
+    return other
+
+
+async def release(other):
+    await other.commit()
+    await other.close()
+
+
+async def test_retention_skips_a_message_whose_flag_is_being_reviewed(pool, empty_dsn):
+    async with pool.connection() as conn:
+        d = Data(conn)
+        conv = await d.conversation(await d.student(await d.session()), NOW - 400 * DAY)
+        reviewed = await d.message(conv, NOW - 40 * DAY)
+        flag = await d.flag(reviewed)
+        plain = await d.message(conv, NOW - 40 * DAY)
+    reviewer = await hold(empty_dsn, "UPDATE flags SET reviewed_at = now() WHERE id = %s", (flag,))
+    assert (await run_promptly(pool))["messages"] == 1  # the unflagged one goes
+    async with pool.connection() as conn:
+        assert await ids(conn, "messages") == [reviewed]
+    await release(reviewer)
+    assert (await run_promptly(pool))["messages"] == 1
+
+
+async def test_retention_skips_a_session_whose_cookie_is_in_use(pool, empty_dsn):
+    async with pool.connection() as conn:
+        d = Data(conn)
+        session = await d.session("closed", NOW - 40 * DAY)
+        student = await d.student(session)
+        await conn.execute(
+            "INSERT INTO auth_sessions (token_hash, student_id, expires_at, csrf_token)"
+            " VALUES (sha256('t'), %s, %s, 'x')", (student, NOW + DAY))
+    user = await hold(empty_dsn, "SELECT 1 FROM auth_sessions FOR UPDATE", ())
+    assert (await run_promptly(pool))["sessions"] == 0
+    await release(user)
+    assert (await run_promptly(pool))["sessions"] == 1
+
+
+async def test_retention_skips_a_session_with_one_student_locked(pool, empty_dsn):
+    async with pool.connection() as conn:
+        d = Data(conn)
+        busy = await d.session("closed", NOW - 40 * DAY)
+        locked = await d.student(busy, "111111")
+        await d.student(busy, "222222")
+        idle = await d.session("closed", NOW - 40 * DAY)
+    editor = await hold(empty_dsn, "SELECT 1 FROM students WHERE id = %s FOR UPDATE", (locked,))
+    assert (await run_promptly(pool))["sessions"] == 1
+    async with pool.connection() as conn:
+        assert await ids(conn, "lesson_sessions") == [busy]
+        cur = await conn.execute("SELECT count(*) FROM students WHERE lesson_session_id = %s", (busy,))
+        assert (await cur.fetchone())[0] == 2
+    await release(editor)
+    assert (await run_promptly(pool))["sessions"] == 1
+
+
+async def test_retention_skips_a_run_while_another_holds_its_lock(pool, empty_dsn):
+    async with pool.connection() as conn:
+        d = Data(conn)
+        conv = await d.conversation(await d.student(await d.session()), NOW - 400 * DAY)
+        await d.message(conv, NOW - 40 * DAY)
+    other = await hold(empty_dsn, "SELECT pg_advisory_xact_lock(%s, %s)",
+                       (records.LOCK_NAMESPACE, records.RETENTION_LOCK))
+    assert await run_promptly(pool) == {"messages": 0, "conversations": 0, "sessions": 0}
+    await release(other)
+    assert (await run_promptly(pool))["messages"] == 1

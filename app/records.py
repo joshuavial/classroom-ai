@@ -49,69 +49,86 @@ async def retention_days(conn) -> int:
 
 
 async def run_retention(pool, now: datetime) -> dict[str, int]:
-    """Delete what is older than the retention period. Returns counts."""
+    """Delete what is older than the retention period. Returns counts.
+
+    It never waits for a lock: rows another transaction holds (a message being
+    written, a roster edit, a flag being reviewed, a cookie session in use)
+    are skipped this run and deleted on a later one, so retention cannot
+    deadlock with them. That covers every row a delete cascades to as well.
+    What it locked is checked again in a fresh statement before deleting.
+    """
+    counts = {"messages": 0, "conversations": 0, "sessions": 0}
     async with pool.connection() as conn, conn.transaction():
-        await conn.execute("SELECT pg_advisory_xact_lock(%s, %s)", (LOCK_NAMESPACE, RETENTION_LOCK))
+        cur = await conn.execute("SELECT pg_try_advisory_xact_lock(%s, %s)", (LOCK_NAMESPACE, RETENTION_LOCK))
+        if not (await cur.fetchone())[0]:
+            log.info("retention already running elsewhere; skipped")
+            return counts
         cutoff = now - timedelta(days=await retention_days(conn))
-        # Retention never waits for a lock: anything another transaction
-        # holds (a message being written, a roster edit, a teacher's review)
-        # is skipped this run and deleted an hour later. Never waiting means
-        # it cannot deadlock with them. What it does lock is checked again in
-        # a fresh statement before deleting.
-        # Flags go with their messages (ON DELETE CASCADE).
-        messages = await conn.execute(
-            "DELETE FROM messages WHERE id IN (SELECT id FROM messages WHERE created_at < %s"
-            " FOR UPDATE SKIP LOCKED)", (cutoff,))
-        # A message insert holds a lock on its conversation, so a conversation
-        # getting its first message is skipped here.
+
+        # Messages, with their flags (ON DELETE CASCADE).
+        cur = await conn.execute(
+            "SELECT id FROM messages WHERE created_at < %s ORDER BY id FOR UPDATE SKIP LOCKED", (cutoff,))
+        message_ids = {r[0] for r in await cur.fetchall()}
+        message_ids -= await partly_locked(
+            conn, message_ids, "SELECT message_id, id FROM flags WHERE message_id = ANY(%s)", "flags")
+        cur = await conn.execute("DELETE FROM messages WHERE id = ANY(%s)", (list(message_ids),))
+        counts["messages"] = cur.rowcount
+
+        # Empty conversations. A message insert holds a lock on its
+        # conversation, so one getting its first message is skipped.
         cur = await conn.execute(
             "SELECT c.id FROM conversations c WHERE c.started_at < %s"
             " AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id)"
             " ORDER BY c.id FOR UPDATE SKIP LOCKED", (cutoff,))
         candidates = [r[0] for r in await cur.fetchall()]
-        conversations = await conn.execute(
+        cur = await conn.execute(
             "DELETE FROM conversations c WHERE c.id = ANY(%s)"
-            " AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id)",
-            (candidates,),
-        )
-        # A session goes only if it, every student in it and every one of
-        # their conversations could be locked. Holding those locks blocks new
-        # students, conversations and messages under them until commit.
+            " AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id)", (candidates,))
+        counts["conversations"] = cur.rowcount
+
+        # Closed sessions with no messages left, with their students, the
+        # students' conversations and cookie sessions (all ON DELETE CASCADE).
+        # A session goes only if all of those could be locked; holding them
+        # also blocks new students, conversations and messages under it.
         cur = await conn.execute(
             "SELECT s.id FROM lesson_sessions s WHERE s.state = 'closed' AND s.closed_at < %s"
             " AND NOT EXISTS (SELECT 1 FROM students st JOIN conversations c ON c.student_id = st.id"
             "  JOIN messages m ON m.conversation_id = c.id WHERE st.lesson_session_id = s.id)"
             " ORDER BY s.id FOR UPDATE SKIP LOCKED", (cutoff,))
         session_ids = {r[0] for r in await cur.fetchall()}
-        session_ids -= await partly_locked(conn, session_ids,
-            "SELECT lesson_session_id, id FROM students WHERE lesson_session_id = ANY(%s)", "students")
-        session_ids -= await partly_locked(conn, session_ids,
+        session_ids -= await partly_locked(
+            conn, session_ids, "SELECT lesson_session_id, id FROM students WHERE lesson_session_id = ANY(%s)",
+            "students")
+        session_ids -= await partly_locked(
+            conn, session_ids,
             "SELECT st.lesson_session_id, c.id FROM conversations c JOIN students st ON st.id = c.student_id"
             " WHERE st.lesson_session_id = ANY(%s)", "c")
-        # Students, their conversations and cookie sessions go with the session.
-        sessions = await conn.execute(
+        session_ids -= await partly_locked(
+            conn, session_ids,
+            "SELECT st.lesson_session_id, a.token_hash FROM auth_sessions a JOIN students st ON st.id = a.student_id"
+            " WHERE st.lesson_session_id = ANY(%s)", "a")
+        cur = await conn.execute(
             "DELETE FROM lesson_sessions s WHERE s.id = ANY(%s) AND s.state = 'closed'"
             " AND NOT EXISTS (SELECT 1 FROM students st JOIN conversations c ON c.student_id = st.id"
             "  JOIN messages m ON m.conversation_id = c.id WHERE st.lesson_session_id = s.id)",
-            (list(session_ids),),
-        )
-    counts = {"messages": messages.rowcount, "conversations": conversations.rowcount,
-              "sessions": sessions.rowcount}
+            (list(session_ids),))
+        counts["sessions"] = cur.rowcount
     log.info("retention deleted %s", counts)
     return counts
 
 
-async def partly_locked(conn, session_ids: set[int], rows_sql: str, lock_of: str) -> set[int]:
-    """Sessions with a row (rows_sql selects session id, row id; lock_of names
-    the row's table or alias) that could not be locked without waiting. The
-    rows that could are now locked."""
-    if not session_ids:
+async def partly_locked(conn, group_ids: set[int], rows_sql: str, lock_of: str) -> set:
+    """Groups (a message, a session) with a row under them that could not be
+    locked without waiting. rows_sql selects (group id, row id) for groups in
+    %s; lock_of names the row's table or alias. Rows that could be locked now
+    are."""
+    if not group_ids:
         return set()
-    ids = list(session_ids)
+    ids = list(group_ids)
     cur = await conn.execute(f"{rows_sql} ORDER BY 2 FOR UPDATE OF {lock_of} SKIP LOCKED", (ids,))
     locked = {row[1] for row in await cur.fetchall()}
     cur = await conn.execute(rows_sql, (ids,))
-    return {session for session, row in await cur.fetchall() if row not in locked}
+    return {group for group, row in await cur.fetchall() if row not in locked}
 
 
 async def retention_loop(
