@@ -680,3 +680,50 @@ async def test_staff_toggle_models(env, staff_client, role):
     assert (await c.put("/api/models/gemma-4-e2b-it", json={"enabled": "on"},
                         headers=await csrf(c))).status_code == 400
     assert await audit(env) == [(c.username, "model.enable", {"model": "gemma-4-e2b-it"})]
+
+
+# Review fixes: a WORKER_URL name is pinned to the address checked, and
+# remove-and-rotate takes locks in the heartbeat's order.
+
+
+async def test_worker_url_name_is_stored_as_the_address_checked(env, monkeypatch):
+    answers = {"worker.lan": ["10.0.0.7"]}
+
+    async def fake_resolve(host, port):
+        return answers[host]
+
+    monkeypatch.setattr(workers, "resolve", fake_resolve)
+    env.agents.add("10.0.0.7", "k" * 40)
+    worker_id = str(uuid.uuid4())
+    assert (await env.beat(worker_id, "k" * 40, worker_url="http://worker.lan:8081")).status_code == 204
+    assert (await env.worker(worker_id)).address == "http://10.0.0.7:8081"
+    # The name now points somewhere forbidden: refused, the stored address stands.
+    answers["worker.lan"] = ["127.0.0.1"]
+    assert (await env.beat(worker_id, "k" * 40, worker_url="http://worker.lan:8081")).status_code == 400
+    # Somewhere allowed but with no agent of ours: the probe refuses it.
+    answers["worker.lan"] = ["10.0.0.8"]
+    assert (await env.beat(worker_id, "k" * 40, worker_url="http://worker.lan:8081")).status_code == 422
+    assert (await env.worker(worker_id)).address == "http://10.0.0.7:8081"
+    # Mixed answers with any forbidden address are refused.
+    answers["worker.lan"] = ["10.0.0.7", "169.254.1.1"]
+    assert (await env.beat(worker_id, "k" * 40, worker_url="http://worker.lan:8081")).status_code == 400
+
+
+async def test_remove_and_rotate_cannot_deadlock_with_a_heartbeat(env, staff_client):
+    worker_id, _ = await env.join()
+    c = await staff_client("admin")
+    headers = await csrf(c)
+    async with await psycopg.AsyncConnection.connect(env.dsn) as hb:
+        async with hb.transaction():
+            # A heartbeat mid-transaction: token share lock taken first...
+            await hb.execute("SELECT value FROM settings WHERE key = 'join_token' FOR SHARE")
+            removal = asyncio.create_task(
+                c.post(f"/api/workers/{worker_id}/remove", json={"rotate": True}, headers=headers))
+            await asyncio.sleep(0.3)
+            assert not removal.done()  # waits on the token, holding nothing on the worker
+            # ...then the worker row, which removal must not be holding.
+            await asyncio.wait_for(
+                hb.execute("UPDATE workers SET capacity = 3 WHERE id = %s", (worker_id,)), 2)
+        r = await removal
+    assert r.status_code == 200
+    assert (await env.worker(worker_id)).removed

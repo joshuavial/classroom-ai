@@ -175,8 +175,16 @@ def derived_address(ip: str) -> str:
     return agent_url(str(addr))
 
 
+async def resolve(host: str, port: int) -> list[str]:
+    infos = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    return [info[4][0] for info in infos]
+
+
 async def override_address(worker_url: str) -> str:
-    """Check a WORKER_URL: plain http on the agent port, to a usable unicast host."""
+    """Check a WORKER_URL: plain http on the agent port, to a usable unicast host.
+
+    Returns the address it checked, not the name, so a later DNS answer cannot
+    send the server's requests somewhere else."""
     url = urllib.parse.urlsplit(worker_url)
     try:
         port = url.port
@@ -186,13 +194,12 @@ async def override_address(worker_url: str) -> str:
             or url.query or url.fragment or url.path not in ("", "/") or port != AGENT_PORT):
         raise HeartbeatError(400, f"worker_url must be http://host:{AGENT_PORT}")
     try:
-        infos = await asyncio.get_running_loop().getaddrinfo(url.hostname, port, type=socket.SOCK_STREAM)
+        addresses = await resolve(url.hostname, port)
     except OSError:
         raise HeartbeatError(400, "worker_url host does not resolve") from None
-    if not all(usable(ipaddress.ip_address(info[4][0])) for info in infos):
+    if not addresses or not all(usable(ipaddress.ip_address(a)) for a in addresses):
         raise HeartbeatError(400, "worker_url is not a usable address")
-    host = f"[{url.hostname}]" if ":" in url.hostname else url.hostname
-    return f"http://{host}:{AGENT_PORT}"
+    return agent_url(str(ipaddress.ip_address(addresses[0])))
 
 
 async def probe(client: httpx.AsyncClient, address: str, api_key: str) -> None:
@@ -452,10 +459,12 @@ async def post_remove(request: Request) -> JSONResponse:
         raise auth.HTTPError(400, "bad_request")
     worker_id = request.path_params["worker_id"]
     async with request.app.state.pool.connection() as conn, conn.transaction():
-        if not await remove_worker(conn, worker_id):
-            raise auth.HTTPError(404, "not_found")
+        # Token row before worker row, the order a heartbeat takes them in,
+        # so the two can never deadlock.
         if rotate:
             await rotate_join_token(conn)
+        if not await remove_worker(conn, worker_id):
+            raise auth.HTTPError(404, "not_found")
         await auth.audit(conn, admin["id"], admin["username"], "worker.remove",
                          {"worker_id": worker_id, "rotated_join_token": rotate})
     return JSONResponse({"removed": worker_id})
