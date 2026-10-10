@@ -29,6 +29,18 @@ class JsonLines(logging.Formatter):
         return json.dumps(line)
 
 
+class DropQueryStrings(logging.Filter):
+    """Access log lines keep the path but never the query string, which can
+    hold a student code typed into the admin search."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple) and len(record.args) >= 3 and isinstance(record.args[2], str):
+            args = list(record.args)
+            args[2] = args[2].split("?", 1)[0]
+            record.args = tuple(args)
+        return True
+
+
 def setup_logging() -> None:
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(JsonLines())
@@ -39,6 +51,7 @@ def setup_logging() -> None:
         logger = logging.getLogger(name)
         logger.handlers = [handler]
         logger.propagate = False
+    logging.getLogger("uvicorn.access").addFilter(DropQueryStrings())
 
 
 async def healthz(request: Request) -> JSONResponse:

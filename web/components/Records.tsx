@@ -1,13 +1,130 @@
 "use client";
 
-// Admin page section: how long messages are kept, the backup download,
-// and the audit log.
+// Admin page section: how long messages are kept, the backup download, one
+// student's export and delete, and the audit log.
 
 import { type FormEvent, useCallback, useEffect, useState } from "react";
-import { api } from "@/lib/api";
+import { api, apiBlob, saveBlob } from "@/lib/api";
 import { onAuthError } from "@/lib/session";
 
 type AuditRow = { id: number; username: string; action: string; detail: Record<string, unknown>; time: string };
+type Student = {
+  id: number;
+  code: string;
+  name: string | null;
+  removed: boolean;
+  lesson_session_id: number;
+  opened: string;
+  class: string;
+  messages: number;
+};
+
+function Students({ onChange }: { onChange: () => void }) {
+  const [query, setQuery] = useState("");
+  const [rows, setRows] = useState<Student[] | null>(null);
+  const [message, setMessage] = useState("");
+
+  const search = useCallback(async (q: string) => {
+    try {
+      setRows((await api<{ students: Student[] }>(`/admin/students?q=${encodeURIComponent(q)}`)).students);
+    } catch (e) {
+      onAuthError(e);
+      setMessage("Could not load the students.");
+    }
+  }, []);
+
+  useEffect(() => {
+    search("");
+  }, [search]);
+
+  async function exportOne(s: Student) {
+    try {
+      const { blob, filename } = await apiBlob(`/admin/students/${s.id}/export`);
+      saveBlob(blob, filename);
+      setMessage(`Exported ${s.name ?? s.code}.`);
+      onChange();
+    } catch (e) {
+      onAuthError(e);
+      setMessage("Could not export that student.");
+    }
+  }
+
+  async function deleteOne(s: Student) {
+    const who = s.name ?? `code ${s.code}`;
+    if (!window.confirm(`Delete ${who} and all their messages (${s.messages} when this list loaded)? This cannot be undone.`)) return;
+    try {
+      await api(`/admin/students/${s.id}`, { method: "DELETE" });
+      setMessage(`Deleted ${who}.`);
+    } catch (e) {
+      onAuthError(e);
+      setMessage("Could not delete that student.");
+    }
+    await search(query);
+    onChange();
+  }
+
+  return (
+    <>
+      <h3>One student</h3>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          search(query);
+        }}
+      >
+        <label>
+          Find a student by name or code
+          <input value={query} maxLength={100} onChange={(e) => setQuery(e.target.value)} />
+        </label>
+        <button type="submit">Find</button>
+      </form>
+      <p role="status">{message}</p>
+      {rows === null ? (
+        <p>Loading.</p>
+      ) : rows.length === 0 ? (
+        <p>No students found.</p>
+      ) : (
+        <>
+        {rows.length >= 100 && <p>Showing the newest 100. Search by name or code to find others.</p>}
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Name</th>
+              <th scope="col">Code</th>
+              <th scope="col">Class</th>
+              <th scope="col">Lesson</th>
+              <th scope="col">Messages</th>
+              <th scope="col" aria-label="Actions" />
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((s) => (
+              <tr key={s.id}>
+                <td>
+                  {s.name ?? "(not joined)"}
+                  {s.removed && " (removed)"}
+                </td>
+                <td>{s.code}</td>
+                <td>{s.class}</td>
+                <td>{new Date(s.opened).toLocaleString()}</td>
+                <td>{s.messages}</td>
+                <td>
+                  <button type="button" onClick={() => exportOne(s)} aria-label={`Export ${s.name ?? s.code}`}>
+                    Export
+                  </button>{" "}
+                  <button type="button" onClick={() => deleteOne(s)} aria-label={`Delete ${s.name ?? s.code}`}>
+                    Delete
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        </>
+      )}
+    </>
+  );
+}
 
 export default function Records() {
   const [days, setDays] = useState<number | null>(null);
@@ -35,6 +152,18 @@ export default function Records() {
       });
     loadAudit();
   }, [loadAudit]);
+
+  async function downloadBackup() {
+    try {
+      const { blob, filename } = await apiBlob("/admin/backup", "POST");
+      saveBlob(blob, filename);
+      setMessage("Backup downloaded.");
+      loadAudit();
+    } catch (e) {
+      onAuthError(e);
+      setMessage("The backup failed. Try again, or use scripts/backup.sh on the server.");
+    }
+  }
 
   async function saveRetention(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -68,12 +197,12 @@ export default function Records() {
       )}
       <h3>Backup</h3>
       <p>
-        <a href="/api/admin/backup" download>
-          Download a backup
-        </a>{" "}
-        of every account, setting and conversation. It holds students&apos; conversations, so keep it where only
-        staff can read it.
+        A backup holds every account, setting and conversation, so keep it where only staff can read it.
       </p>
+      <button type="button" onClick={downloadBackup}>
+        Download a backup
+      </button>
+      <Students onChange={() => loadAudit()} />
       <h3>Audit log</h3>
       <table>
         <thead>

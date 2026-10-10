@@ -137,7 +137,7 @@ Requirements: R1.5, R7.1-R7.4, acceptance 10.
 
 Checks: retention test with a fake clock. Export contents test. Backup, wipe, restore round trip on a populated database. Each staff action writes one audit row.
 
-Delivered so far (2026-10-11): `app/records.py` (hourly retention that locks before it deletes, export and delete one student), `scripts/backup.sh` and `scripts/restore.sh` (restore in one transaction), admin endpoints for the audit log, the retention setting, export, delete and the backup download (the app image carries the PostgreSQL 18 client), and a Records section on `/admin`. Backup, wipe with `docker compose down -v`, restore returned the same rows on a Mac. Still to do: a student list on the admin page for export and delete (needs step 3 on main), audit rows for flag reviews (step 7; session state changes are already audited by step 3), and the backup section of `docs/install.md` (with step 9).
+Delivered so far (2026-10-11): `app/records.py` (hourly retention that locks before it deletes, export and delete one student), `scripts/backup.sh` and `scripts/restore.sh` (restore in one transaction), admin endpoints for the audit log, the retention setting, export, delete and the backup download (the app image carries the PostgreSQL 18 client), and a Records section on `/admin`. Backup, wipe with `docker compose down -v`, restore returned the same rows on a Mac. A student list on the admin page (removed students too) exports or deletes one student, the backup download is a POST, and `docs/install.md` has a backup and restore section. Still to do: audit rows for flag reviews (step 7; session state changes are already audited by step 3).
 
 ## 9. Install, TLS and Windows
 
