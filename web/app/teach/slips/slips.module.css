@@ -1,0 +1,51 @@
+.sheet {
+  font-family: system-ui, sans-serif;
+  max-width: 190mm;
+  margin: 1rem auto;
+}
+
+.controls {
+  margin-bottom: 1rem;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.slip {
+  border: 1px dashed #666;
+  padding: 5mm;
+  height: 32mm;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.code {
+  font-size: 22pt;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  font-variant-numeric: tabular-nums;
+}
+
+.small {
+  font-size: 9pt;
+}
+
+@page {
+  size: A4;
+  margin: 10mm;
+}
+
+@media print {
+  .controls {
+    display: none;
+  }
+  .sheet {
+    margin: 0;
+    max-width: none;
+  }
+}

@@ -79,6 +79,7 @@ async def app(dsn: str):
 async def client(app):
     # https so Secure cookies are sent back, as in a browser.
     app.state.limiter.reset()
+    app.state.join_limiter.reset()
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="https://test") as c:
         yield c

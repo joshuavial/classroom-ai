@@ -61,6 +61,8 @@ Requirements: R3.2, R3.3 as decided in D1, R3.4 (limit stored), R3.5, R4.6, R4.7
 
 Checks: API tests for code uniqueness among open sessions, single-use binding (a second name on a bound code gets the bound name), resume on a second device with the same code, closing the session invalidates all its codes and cookies, unbound and removed students' cookies refused, rate limit, pause blocks sending. Vitest tests for the slips page and the name and code header.
 
+Delivered 2026-10-10: everything listed above. Migration `003_lesson_sessions.sql` allows one live lesson session per class. Pause is enforced through `require_student(sending=True)`, which step 4's send endpoint must call. Audit rows are written for class, session and roster actions.
+
 ## 4. Student chat, unguarded behind a feature flag
 
 Depends on 2 and 3.

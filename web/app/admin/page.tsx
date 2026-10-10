@@ -112,7 +112,7 @@ export default function AdminPage() {
     <main className={styles.page}>
       <h1>Admin</h1>
       <p>
-        Signed in as {state.staff.username}. <button onClick={signOut}>Sign out</button>
+        Signed in as {state.staff.username}. <button type="button" onClick={signOut}>Sign out</button>
       </p>
       <StaffAccounts />
     </main>

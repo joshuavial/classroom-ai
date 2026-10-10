@@ -14,7 +14,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from app import auth, db
+from app import auth, classes, db, students
 
 log = logging.getLogger("app")
 
@@ -66,7 +66,7 @@ def create_app(dsn: str) -> Starlette:
             await pool.close()
 
     app = Starlette(
-        routes=[Route("/healthz", healthz), *auth.routes],
+        routes=[Route("/healthz", healthz), *auth.routes, *classes.routes, *students.routes],
         middleware=[Middleware(auth.CSRFMiddleware)],
         exception_handlers={
             auth.HTTPError: auth.http_error,
@@ -76,6 +76,8 @@ def create_app(dsn: str) -> Starlette:
         lifespan=lifespan,
     )
     app.state.limiter = auth.RateLimiter()
+    # Student codes can be guessed: 30 tries a minute per address (architecture).
+    app.state.join_limiter = auth.RateLimiter(limit=30)
     return app
 
 

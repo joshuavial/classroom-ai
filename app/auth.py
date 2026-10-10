@@ -31,7 +31,7 @@ SESSION_HOURS = 12
 # SameSite=Lax strips cookies from cross-site POSTs.
 CSRF_EXEMPT = frozenset({"/api/workers/heartbeat"})
 SAFE_METHODS = frozenset({"GET", "HEAD"})
-STAFF_KEY = "classroom_ai.staff"  # request scope key for the loaded session
+SESSION_KEY = "classroom_ai.session"  # request scope key for the loaded session
 
 ROLES = ("admin", "teacher")
 USERNAME = re.compile(r"^[a-z0-9._-]{1,64}$")
@@ -175,7 +175,11 @@ def clear_cookie(response: Response, request: Request, name: str) -> None:
     )
 
 
-async def start_session(conn, request: Request, response: Response, staff_id: int) -> None:
+async def start_session(
+    conn, request: Request, response: Response, *, staff_id: int | None = None, student_id: int | None = None
+) -> None:
+    """Sign this device in as one staff member or one student. Any session the
+    device already had is ended: a device is a staff device or a student one."""
     # Replacing a live session is a signed-in request like any other: it
     # needs that session's own CSRF token, not just a matching cookie.
     # Callers load the session before opening `conn`, so this is a cache hit
@@ -188,15 +192,29 @@ async def start_session(conn, request: Request, response: Response, staff_id: in
     if old := request.cookies.get(SESSION_COOKIE):
         await conn.execute("DELETE FROM auth_sessions WHERE token_hash = %s", (token_hash(old),))
     await conn.execute(
-        "INSERT INTO auth_sessions (token_hash, staff_id, csrf_token, expires_at)"
-        " VALUES (%s, %s, %s, now() + make_interval(hours => %s))",
-        (token_hash(token), staff_id, csrf, SESSION_HOURS),
+        "INSERT INTO auth_sessions (token_hash, staff_id, student_id, csrf_token, expires_at)"
+        " VALUES (%s, %s, %s, %s, now() + make_interval(hours => %s))",
+        (token_hash(token), staff_id, student_id, csrf, SESSION_HOURS),
     )
     set_cookie(response, request, SESSION_COOKIE, token, http_only=True)
     set_cookie(response, request, CSRF_COOKIE, csrf, http_only=False)
 
 
+STUDENT_COLUMNS = (
+    "st.id, st.name, st.code, st.lesson_session_id, l.state, c.name, c.message_limit"
+)
+# A student cookie works only while the student is bound and not removed and
+# the lesson session is not closed, even if a delete of the cookie row is missed.
+STUDENT_LIVE = "st.name IS NOT NULL AND NOT st.removed AND l.state <> 'closed'"
+
+
+def student_from_row(row) -> dict:
+    keys = ("id", "name", "code", "lesson_session_id", "state", "class_name", "message_limit")
+    return {"kind": "student", **dict(zip(keys, row))}
+
+
 async def find_session(pool, token: str | None) -> dict | None:
+    """The staff member or student a session cookie belongs to, or None."""
     if not token:
         return None
     async with pool.connection() as conn:
@@ -206,18 +224,27 @@ async def find_session(pool, token: str | None) -> dict | None:
             " WHERE a.token_hash = %s AND a.expires_at > now()",
             (token_hash(token),),
         )
-        row = await cur.fetchone()
-    if row is None:
-        return None
-    return {"id": row[0], "username": row[1], "role": row[2], "csrf": row[3]}
+        if row := await cur.fetchone():
+            return {"kind": "staff", "id": row[0], "username": row[1], "role": row[2], "csrf": row[3]}
+        cur = await conn.execute(
+            f"SELECT {STUDENT_COLUMNS}, a.csrf_token FROM auth_sessions a"
+            " JOIN students st ON st.id = a.student_id"
+            " JOIN lesson_sessions l ON l.id = st.lesson_session_id"
+            " JOIN classes c ON c.id = l.class_id"
+            f" WHERE a.token_hash = %s AND a.expires_at > now() AND {STUDENT_LIVE}",
+            (token_hash(token),),
+        )
+        if row := await cur.fetchone():
+            return {**student_from_row(row[:-1]), "csrf": row[-1]}
+    return None
 
 
 async def load_session(request: Request) -> dict | None:
-    """The signed-in staff member, if any. Cached on the request scope so the
-    CSRF middleware can reuse it."""
-    if STAFF_KEY not in request.scope:
-        request.scope[STAFF_KEY] = await find_session(request.app.state.pool, request.cookies.get(SESSION_COOKIE))
-    return request.scope[STAFF_KEY]
+    """The signed-in staff member or student, if any. Cached on the request
+    scope so the CSRF middleware can reuse it."""
+    if SESSION_KEY not in request.scope:
+        request.scope[SESSION_KEY] = await find_session(request.app.state.pool, request.cookies.get(SESSION_COOKIE))
+    return request.scope[SESSION_KEY]
 
 
 def check_session_csrf(request: Request, session: dict) -> None:
@@ -237,7 +264,7 @@ async def require_staff(request: Request, role: str = "teacher") -> dict:
     bound to this session, not only the cookie.
     """
     staff = await load_session(request)
-    if staff is None:
+    if staff is None or staff["kind"] != "staff":
         raise HTTPError(401, "not_signed_in")
     check_session_csrf(request, staff)
     if role == "admin" and staff["role"] != "admin":
@@ -245,8 +272,22 @@ async def require_staff(request: Request, role: str = "teacher") -> dict:
     return staff
 
 
+async def require_student(request: Request, sending: bool = False) -> dict:
+    """The signed-in student, or 401. When sending a message, a paused lesson
+    session refuses with 409 (R4.6)."""
+    student = await load_session(request)
+    if student is None or student["kind"] != "student":
+        raise HTTPError(401, "not_signed_in")
+    check_session_csrf(request, student)
+    if sending and student["state"] == "paused":
+        raise HTTPError(409, "paused")
+    return student
+
+
 def public(staff: dict | None) -> dict:
-    return {"staff": None if staff is None else {"username": staff["username"], "role": staff["role"]}}
+    if staff is None or staff["kind"] != "staff":
+        return {"staff": None}
+    return {"staff": {"username": staff["username"], "role": staff["role"]}}
 
 
 class CSRFMiddleware:
@@ -303,8 +344,8 @@ class CSRFMiddleware:
 
     @staticmethod
     async def wanted_token(request: Request, cookie: str | None) -> str | None:
-        if STAFF_KEY in request.scope:
-            staff = request.scope[STAFF_KEY]
+        if SESSION_KEY in request.scope:
+            staff = request.scope[SESSION_KEY]
         elif cookie is None and request.cookies.get(SESSION_COOKIE):
             staff = await find_session(request.app.state.pool, request.cookies[SESSION_COOKIE])
         else:
@@ -320,15 +361,23 @@ class CSRFMiddleware:
 MAX_BODY = 64 * 1024
 
 
-async def json_fields(request: Request, *names: str) -> dict[str, str]:
+async def json_body(request: Request) -> dict:
+    """The request body as a JSON object (an empty body is {}), or 400/413."""
     raw = await request.body()
     if len(raw) > MAX_BODY:
         raise HTTPError(413, "too_large")
     try:
-        body = json.loads(raw)
+        body = json.loads(raw) if raw else {}
     except ValueError:
         raise HTTPError(400, "bad_request") from None
-    if not isinstance(body, dict) or not all(isinstance(body.get(n), str) for n in names):
+    if not isinstance(body, dict):
+        raise HTTPError(400, "bad_request")
+    return body
+
+
+async def json_fields(request: Request, *names: str) -> dict[str, str]:
+    body = await json_body(request)
+    if not all(isinstance(body.get(n), str) for n in names):
         raise HTTPError(400, "bad_request")
     return {n: body[n] for n in names}
 
@@ -423,7 +472,7 @@ async def setup(request: Request) -> JSONResponse:
         staff_id = (await cur.fetchone())[0]
         await conn.execute("DELETE FROM settings WHERE key = %s", (SETUP_KEY,))
         await audit(conn, staff_id, username, "staff.create", {"username": username, "role": "admin"})
-        await start_session(conn, request, response, staff_id)
+        await start_session(conn, request, response, staff_id=staff_id)
     log.info("admin account created")
     return response
 
@@ -452,7 +501,7 @@ async def login(request: Request) -> JSONResponse:
     response = JSONResponse({"staff": {"username": row[1], "role": row[2]}})
     await load_session(request)
     async with request.app.state.pool.connection() as conn, conn.transaction():
-        await start_session(conn, request, response, row[0])
+        await start_session(conn, request, response, staff_id=row[0])
     return response
 
 
@@ -460,9 +509,9 @@ async def logout(request: Request) -> Response:
     """Succeeds with or without a session, so a stale tab can recover, and
     clears both cookies. With a live session the CSRF header must be that
     session's token, as for any signed-in request."""
-    staff = await load_session(request)
-    if staff is not None:
-        check_session_csrf(request, staff)
+    session = await load_session(request)
+    if session is not None:
+        check_session_csrf(request, session)
     token = request.cookies.get(SESSION_COOKIE)
     if token:
         async with request.app.state.pool.connection() as conn:

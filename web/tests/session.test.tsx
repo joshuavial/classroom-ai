@@ -37,7 +37,7 @@ test("an admin sees the staff list on /admin", async () => {
 });
 
 test("an admin can open /teach", async () => {
-  mockApi({ "GET /me": { body: { staff: { username: "boss", role: "admin" } } } });
+  mockApi({ "GET /me": { body: { staff: { username: "boss", role: "admin" } } }, "GET /classes": { body: { classes: [] } } });
   render(<TeachPage />);
   expect(await screen.findByRole("heading", { name: "Teacher" })).toBeInTheDocument();
 });
