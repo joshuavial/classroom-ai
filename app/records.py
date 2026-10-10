@@ -59,6 +59,11 @@ async def run_retention(pool, now: datetime) -> dict[str, int]:
     """
     counts = {"messages": 0, "conversations": 0, "sessions": 0}
     async with pool.connection() as conn, conn.transaction():
+        # Anything SKIP LOCKED cannot skip (a table lock, say) fails the run
+        # after this long instead of waiting: everything rolls back and the
+        # next run tries again. Shorter than PostgreSQL's one-second deadlock
+        # check, so retention gives up before a deadlock forms.
+        await conn.execute("SET LOCAL lock_timeout = '200ms'")
         cur = await conn.execute("SELECT pg_try_advisory_xact_lock(%s, %s)", (LOCK_NAMESPACE, RETENTION_LOCK))
         if not (await cur.fetchone())[0]:
             log.info("retention already running elsewhere; skipped")

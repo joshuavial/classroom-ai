@@ -485,3 +485,19 @@ async def test_retention_skips_a_run_while_another_holds_its_lock(pool, empty_ds
     assert await run_promptly(pool) == {"messages": 0, "conversations": 0, "sessions": 0}
     await release(other)
     assert (await run_promptly(pool))["messages"] == 1
+
+
+async def test_a_table_lock_fails_the_run_quickly_and_deletes_nothing(pool, empty_dsn):
+    async with pool.connection() as conn:
+        d = Data(conn)
+        conv = await d.conversation(await d.student(await d.session()), NOW - 400 * DAY)
+        old = await d.message(conv, NOW - 40 * DAY)
+    other = await hold(empty_dsn, "LOCK TABLE messages IN SHARE MODE", ())
+    try:
+        with pytest.raises(psycopg.errors.LockNotAvailable):
+            await run_promptly(pool)
+        async with pool.connection() as conn:
+            assert await ids(conn, "messages") == [old]
+    finally:
+        await release(other)
+    assert (await run_promptly(pool))["messages"] == 1
