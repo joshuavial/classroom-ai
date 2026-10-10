@@ -157,7 +157,7 @@ test("export downloads the file; delete asks first", async () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete Aroha" }));
   });
   expect(calls.some((c) => c.method === "DELETE")).toBe(false);
-  expect(confirm.mock.calls[0][0]).toContain("all 2 of their messages");
+  expect(confirm.mock.calls[0][0]).toContain("all their messages (2 when this list loaded)");
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete Aroha" }));
   });

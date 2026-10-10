@@ -209,3 +209,22 @@ async def test_student_list_includes_removed_and_searches(env):
     assert await find("_") == [student_id]
     assert await find("nobody") == []
     assert (await admin.get("/api/admin/students", params={"q": "x" * 101})).status_code == 400
+    assert (await admin.get("/api/admin/students", params={"q": " " * 101})).status_code == 400
+    assert await find(" ") == []  # whitespace is matched as typed, not trimmed to everything
+    with psycopg.connect(dsn) as conn:
+        conn.execute("UPDATE students SET name = %s WHERE id = %s", ("back\\slash", other))
+    assert await find("k\\s") == [other]
+    r = await admin.get("/api/admin/students")
+    assert r.headers["cache-control"] == "no-store"
+
+
+async def test_student_list_is_capped(env):
+    app, dsn, client = env
+    await student(app)
+    with psycopg.connect(dsn) as conn:
+        session = conn.execute("SELECT lesson_session_id FROM students LIMIT 1").fetchone()[0]
+        for i in range(110):
+            conn.execute("INSERT INTO students (lesson_session_id, code, removed) VALUES (%s, %s, true)",
+                         (session, f"{i:06d}"))
+    admin = await client("admin")
+    assert len((await admin.get("/api/admin/students")).json()["students"]) == 100

@@ -1,6 +1,7 @@
 """Records: retention, and exporting or deleting one student (R7.2, R7.3).
 
-Backup and restore are scripts/backup.sh and scripts/restore.sh.
+Plus the admin endpoints for the audit log, retention setting, student list,
+export, delete and backup download. Restore is scripts/restore.sh.
 """
 
 import asyncio
@@ -246,7 +247,7 @@ async def get_students(request: Request) -> JSONResponse:
     """Every student row, removed ones too, so any student's data can be
     exported or deleted. Newest first; q matches name or code."""
     await auth.require_staff(request, "admin")
-    q = request.query_params.get("q", "").strip()
+    q = request.query_params.get("q", "")
     if len(q) > 100:
         raise auth.HTTPError(400, "bad_request")
     # Escape LIKE wildcards so q is matched as typed.
@@ -265,7 +266,7 @@ async def get_students(request: Request) -> JSONResponse:
     return JSONResponse({"students": [
         {"id": i, "code": code, "name": name, "removed": removed, "lesson_session_id": sid,
          "opened": iso(opened), "class": cls, "messages": n}
-        for i, code, name, removed, sid, opened, cls, n in rows]})
+        for i, code, name, removed, sid, opened, cls, n in rows]}, headers={"Cache-Control": "no-store"})
 
 
 async def post_backup(request: Request) -> Response:

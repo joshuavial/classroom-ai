@@ -51,7 +51,7 @@ function Students({ onChange }: { onChange: () => void }) {
 
   async function deleteOne(s: Student) {
     const who = s.name ?? `code ${s.code}`;
-    if (!window.confirm(`Delete ${who} and all ${s.messages} of their messages? This cannot be undone.`)) return;
+    if (!window.confirm(`Delete ${who} and all their messages (${s.messages} when this list loaded)? This cannot be undone.`)) return;
     try {
       await api(`/admin/students/${s.id}`, { method: "DELETE" });
       setMessage(`Deleted ${who}.`);
@@ -84,6 +84,8 @@ function Students({ onChange }: { onChange: () => void }) {
       ) : rows.length === 0 ? (
         <p>No students found.</p>
       ) : (
+        <>
+        {rows.length >= 100 && <p>Showing the newest 100. Search by name or code to find others.</p>}
         <table>
           <thead>
             <tr>
@@ -118,6 +120,7 @@ function Students({ onChange }: { onChange: () => void }) {
             ))}
           </tbody>
         </table>
+        </>
       )}
     </>
   );

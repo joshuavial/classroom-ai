@@ -157,7 +157,7 @@ To restore, with the stack running:
 ./scripts/restore.sh /path/to/file.dump
 ```
 
-It checks the file is a backup, asks you to type `yes`, stops the app, replaces the whole database in one transaction, and starts the app again. If anything fails, the database is left as it was. Restoring brings back everything in the file and drops anything newer.
+It checks the file is a backup, asks you to type `yes`, stops the app, replaces the whole database in one transaction, and starts the app again. If the replacement fails, the database is left as it was. If the app then does not come back (for example the backup is from a newer release), the database has already been replaced: the script says so, and `docker compose logs app` shows why. Restoring brings back everything in the file and drops anything newer.
 
 The app deletes messages older than the retention period as soon as it starts, so restoring a backup older than that period loses those messages again. To read old messages without losing them, do not start the app on that backup: load it into a separate PostgreSQL database with `pg_restore` and read it there with `psql`.
 
