@@ -6,7 +6,7 @@ import itertools
 import psycopg
 import pytest
 
-from app import classes
+from app import auth, classes
 from tests.helpers import make_staff, new_client, post, sign_in
 
 
@@ -213,6 +213,115 @@ async def test_join_rate_limit(app, teacher):
         statuses = [(await post(guesser, "/api/join", {"code": f"{i:06d}", "name": "x"})).status_code
                     for i in range(31)]
     assert statuses[:30].count(429) == 0 and statuses[30] == 429
+
+
+async def test_a_class_behind_one_address_all_joins(app, teacher):
+    """Successful joins do not use up the limit, so 40 students sharing one
+    NAT address all get in within the minute."""
+    _, roster = await new_lesson(teacher, 40)
+    for i, entry in enumerate(roster):
+        _, r = await join(app, entry["code"], f"Student {i}")
+        assert r.status_code == 200, i
+
+
+async def test_successful_joins_have_a_looser_cap(app, teacher):
+    _, roster = await new_lesson(teacher, 1)
+    app.state.join_total_limiter.limit = 5
+    try:
+        statuses = [(await join(app, roster[0]["code"], "Aroha"))[1].status_code for _ in range(6)]
+    finally:
+        app.state.join_total_limiter.limit = 300
+    assert statuses == [200] * 5 + [429]
+
+
+async def test_a_slow_successful_join_cannot_free_a_wrong_guess(app, teacher, monkeypatch):
+    """Through the endpoint: a join admitted first and finishing after 29
+    wrong guesses must give back only its own place. Checked just after the
+    success's own entry would have expired, which is when giving back a
+    guess's place instead would let one more guess in."""
+    from app import students
+
+    _, roster = await new_lesson(teacher, 1)
+    taken = {r["code"] for r in roster}
+    wrong = [c for c in (f"{i:06d}" for i in range(200)) if c not in taken]
+    now = [1000.0]
+    monkeypatch.setattr(app.state.join_limiter, "clock", lambda: now[0])
+    gate = asyncio.Event()
+    real = students.start_session
+
+    async def slow_start(*args, **kwargs):
+        await gate.wait()
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(students, "start_session", slow_start)
+    async with new_client(app) as c:
+        success = asyncio.create_task(post(c, "/api/join", {"code": roster[0]["code"], "name": "Aroha"}))
+        await asyncio.sleep(0.1)  # admitted at t=1000 and waiting
+        now[0] = 1001.0
+        for code in wrong[:29]:
+            assert (await post(c, "/api/join", {"code": code, "name": "x"})).status_code == 404
+        gate.set()
+        assert (await success).status_code == 200
+        assert (await post(c, "/api/join", {"code": wrong[29], "name": "x"})).status_code == 404
+        # 30 wrong guesses at t=1001 are all still in the window at t=1060.5.
+        now[0] = 1060.5
+        assert (await post(c, "/api/join", {"code": wrong[30], "name": "x"})).status_code == 429
+
+
+async def test_wrong_codes_still_use_up_the_limit(app, teacher):
+    _, roster = await new_lesson(teacher, 1)
+    taken = {r["code"] for r in roster}
+    wrong = [c for c in (f"{i:06d}" for i in range(100)) if c not in taken][:30]
+    async with new_client(app) as guesser:
+        for code in wrong:
+            assert (await post(guesser, "/api/join", {"code": code, "name": "x"})).status_code == 404
+        r = await post(guesser, "/api/join", {"code": roster[0]["code"], "name": "x"})
+    assert (r.status_code, r.json()) == (429, {"error": "too_many_attempts"})
+
+
+def test_forgive_removes_only_that_attempt():
+    now = [0.0]
+    limiter = auth.RateLimiter(limit=2, window=60, clock=lambda: now[0])
+    first = limiter.admit("a")
+    assert first and limiter.admit("a") and limiter.admit("a") is None
+    limiter.forgive("a", first)
+    assert limiter.admit("a") and limiter.admit("a") is None
+    limiter.forgive("nobody", first)  # unknown key: nothing happens
+
+
+def test_overlapping_success_cannot_free_a_failure():
+    """A join admitted first and finishing last must remove its own entry,
+    never a later failed guess, or more than the limit of failures get in."""
+    now = [0.0]
+    limiter = auth.RateLimiter(limit=30, window=60, clock=lambda: now[0])
+    success = limiter.admit("nat")  # a real join, still in flight
+    failures = 0
+    for _ in range(40):
+        now[0] += 0.01
+        if limiter.admit("nat"):
+            failures += 1
+    assert failures == 29  # the in-flight join holds one place
+    limiter.forgive("nat", success)
+    now[0] += 0.01
+    while limiter.admit("nat"):
+        failures += 1
+    assert failures == 30
+    # Just after where the success's own entry would expire, all 30 failures
+    # are still in the window, so nothing more gets in. (Forgiving the newest
+    # entry instead would have left the success there, freeing a place now.)
+    now[0] = 60.005
+    assert limiter.admit("nat") is None
+
+
+def test_forgiving_an_expired_attempt_leaves_newer_ones():
+    now = [0.0]
+    limiter = auth.RateLimiter(limit=3, window=60, clock=lambda: now[0])
+    success = limiter.admit("nat")
+    now[0] = 61  # the success's entry has left the window by the time it finishes
+    a, b, c = limiter.admit("nat"), limiter.admit("nat"), limiter.admit("nat")
+    assert a and b and c and limiter.admit("nat") is None
+    limiter.forgive("nat", success)
+    assert limiter.admit("nat") is None  # three failures still counted
 
 
 async def test_closing_invalidates_codes_and_cookies(app, teacher, dsn):
