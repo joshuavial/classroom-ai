@@ -171,7 +171,7 @@ async def test_first_use_binds_and_a_second_name_gets_the_bound_one(app, teacher
     assert first.cookies["session"] != second.cookies["session"]
     me = (await second.get("/api/student/me")).json()["student"]
     assert me == {"name": "Aroha", "code": code, "class_name": "Year 9 Science", "state": "open",
-                  "message_limit": 20}
+                  "message_limit": 20, "messages_used": 0}
     roster = (await teacher.get(f"/api/sessions/{session_id}")).json()["roster"]
     assert roster[0]["name"] == "Aroha" and roster[0]["bound_at"]
 

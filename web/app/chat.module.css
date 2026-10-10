@@ -1,0 +1,68 @@
+.chat {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(0, 1fr);
+  max-width: 64rem;
+  margin: 1rem auto;
+  padding: 0 1rem;
+  font-family: system-ui, sans-serif;
+  line-height: 1.5;
+}
+
+@media (min-width: 760px) {
+  .chat {
+    grid-template-columns: 16rem minmax(0, 1fr);
+  }
+}
+
+.side ul {
+  list-style: none;
+  padding: 0;
+}
+
+.side button,
+.side select {
+  font: inherit;
+  margin: 0.25rem 0;
+}
+
+.monitor {
+  font-weight: 600;
+  border-left: 4px solid #10324a;
+  padding-left: 0.5rem;
+}
+
+.log {
+  border: 1px solid #c8ccd2;
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  min-height: 12rem;
+  white-space: pre-wrap;
+}
+
+.you {
+  background: #eef3f8;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+}
+
+.ai {
+  padding: 0.25rem 0.5rem;
+}
+
+.form {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.form textarea {
+  font: inherit;
+  padding: 0.5rem;
+}
+
+.form button {
+  justify-self: start;
+  font: inherit;
+  padding: 0.5rem 1rem;
+}

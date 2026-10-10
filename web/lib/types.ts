@@ -27,4 +27,14 @@ export type Student = {
   class_name: string;
   state: LessonState;
   message_limit: number | null;
+  messages_used?: number;
+};
+
+export type Conversation = { id: number; model: string; started_at: string; title: string };
+
+export type ChatMessage = {
+  id: number | string;
+  role: "user" | "assistant";
+  text: string;
+  status: string;
 };

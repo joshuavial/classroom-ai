@@ -1,9 +1,10 @@
 "use client";
 
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { ApiError, api } from "@/lib/api";
 import type { Student } from "@/lib/types";
 import { StudentHeader } from "@/app/student-header";
+import { Chat } from "@/app/chat";
 import forms from "@/app/forms.module.css";
 import styles from "@/app/student.module.css";
 
@@ -62,16 +63,19 @@ function JoinForm({ onJoined }: { onJoined: (s: Student) => void }) {
 export default function StudentPage() {
   const [student, setStudent] = useState<Student | null | undefined>(undefined);
 
+  const refresh = useCallback(() => {
+    api<{ student: Student | null }>("/student/me")
+      .then((r) => setStudent(r.student))
+      .catch(() => setStudent((s) => s ?? null));
+  }, []);
+
   useEffect(() => {
-    const check = () =>
-      api<{ student: Student | null }>("/student/me")
-        .then((r) => setStudent(r.student))
-        .catch(() => setStudent((s) => s ?? null));
+    const check = refresh;
     check();
     // Notice a pause, resume or close without a reload (live updates come in step 7).
     const timer = setInterval(check, 15000);
     return () => clearInterval(timer);
-  }, []);
+  }, [refresh]);
 
   if (student === undefined) return <main className={forms.page}>Loading…</main>;
   if (student === null) return <JoinForm onJoined={setStudent} />;
@@ -84,9 +88,8 @@ export default function StudentPage() {
             Your teacher has paused the class. You can't send messages until it starts again.
           </p>
         )}
-        <p>Your teacher can read everything you write here.</p>
-        <p>Chat is not switched on yet.</p>
       </main>
+      <Chat student={student} onChanged={refresh} />
     </>
   );
 }

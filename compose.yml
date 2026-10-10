@@ -23,6 +23,9 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: ${DATABASE_URL:?run scripts/init-env.sh first}
+      # Only for the step 4 manual run; chat fails closed without it until
+      # the guard (step 6) is in.
+      GUARD_DISABLED: ${GUARD_DISABLED:-0}
     networks: [edge, internal]
     depends_on:
       db:

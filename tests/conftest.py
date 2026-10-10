@@ -70,7 +70,7 @@ def empty_dsn(pg_server: str) -> str:
 
 @pytest.fixture(scope="session")
 async def app(dsn: str):
-    application = create_app(dsn)
+    application = create_app(dsn, guard_disabled=True)
     async with application.router.lifespan_context(application):
         yield application
 

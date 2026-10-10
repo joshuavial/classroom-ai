@@ -115,7 +115,15 @@ async def join(request: Request) -> JSONResponse:
 
 
 async def me(request: Request) -> JSONResponse:
-    return JSONResponse(public(await load_session(request)))
+    session = await load_session(request)
+    body = public(session)
+    if body["student"] is not None:
+        from app.chat import messages_used, sweep_pending  # chat imports this module's helpers
+
+        async with request.app.state.pool.connection() as conn:
+            await sweep_pending(conn, session["id"])
+            body["student"]["messages_used"] = await messages_used(conn, session["id"])
+    return JSONResponse(body)
 
 
 routes = [

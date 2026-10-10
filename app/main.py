@@ -16,7 +16,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from app import auth, classes, db, guard_settings, records, students, workers
+from app import auth, chat, classes, db, guard, guard_settings, records, students, workers
 
 log = logging.getLogger("app")
 
@@ -69,8 +69,12 @@ def create_app(
     dsn: str,
     worker_transport: httpx.AsyncBaseTransport | None = None,
     clock=workers.utcnow,
+    guard_disabled: bool | None = None,
 ) -> Starlette:
-    """worker_transport and clock let tests stand in for workers and time."""
+    """worker_transport and clock let tests stand in for workers and time.
+    guard_disabled defaults to GUARD_DISABLED=1 in the environment."""
+    if guard_disabled is None:
+        guard_disabled = guard.disabled_from_env()
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):
@@ -83,8 +87,12 @@ def create_app(
             await auth.prepare()
             async with pool.connection() as conn:
                 await workers.ensure_join_token(conn)
+                await chat.sweep_all_pending(conn)
             app.state.pool = pool
             app.state.clock = clock
+            app.state.guard_disabled = guard_disabled
+            if guard_disabled:
+                log.warning("GUARD_DISABLED is set: chat is NOT checked. Tests and the step 4 manual run only.")
             app.state.router = workers.Router()
             app.state.dsn = dsn
             retention = asyncio.create_task(records.retention_loop(pool, clock))
@@ -101,7 +109,7 @@ def create_app(
 
     app = Starlette(
         routes=[Route("/healthz", healthz), *auth.routes, *classes.routes, *students.routes,
-                *workers.routes, *guard_settings.routes, *records.routes],
+                *workers.routes, *guard_settings.routes, *records.routes, *chat.routes],
         middleware=[Middleware(auth.CSRFMiddleware)],
         exception_handlers={
             auth.HTTPError: auth.http_error,

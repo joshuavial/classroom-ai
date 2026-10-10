@@ -54,8 +54,11 @@ async def test_already_migrated_database_is_left_alone(empty_dsn):
 
 async def test_guard_migration_preserves_existing_messages_and_settings(empty_dsn, schema_copy):
     guard_migration = schema_copy / "005_guard_evidence.sql"
-    held = guard_migration.read_text()
+    chat_migration = schema_copy / "006_chat.sql"
+    held_guard = guard_migration.read_text()
+    held_chat = chat_migration.read_text()
     guard_migration.unlink()
+    chat_migration.unlink()
     assert await run(empty_dsn, schema_copy) == [1, 2, 3, 4]
     with psycopg.connect(empty_dsn) as conn:
         staff = conn.execute(
@@ -78,7 +81,7 @@ async def test_guard_migration_preserves_existing_messages_and_settings(empty_ds
             (conversation,),
         ).fetchone()[0]
         conn.execute("INSERT INTO settings (key, value) VALUES ('guard_categories', '{\"existing\":true}')")
-    guard_migration.write_text(held)
+    guard_migration.write_text(held_guard)
     assert await run(empty_dsn, schema_copy) == [5]
     with psycopg.connect(empty_dsn) as conn:
         assert conn.execute("SELECT text, guard_status FROM messages WHERE id = %s", (message,)).fetchone() == (
@@ -88,6 +91,8 @@ async def test_guard_migration_preserves_existing_messages_and_settings(empty_ds
         assert conn.execute("SELECT value FROM settings WHERE key = 'guard_categories'").fetchone()[0] == {
             "existing": True
         }
+    chat_migration.write_text(held_chat)
+    assert await run(empty_dsn, schema_copy) == [6]
 
 
 async def test_concurrent_startup_applies_once(empty_dsn):

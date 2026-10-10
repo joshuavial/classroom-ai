@@ -381,11 +381,13 @@ class Router:
         self.in_flight: Counter[str] = Counter()
 
     def pick(self, workers: list[Worker], generation: int, enabled: set[str], model: str,
-             now: datetime) -> Worker:
+             now: datetime, exclude: frozenset[str] = frozenset()) -> Worker:
         if model not in enabled:
             raise NoWorker(model)
         best = None
         for w in workers:
+            if w.id in exclude:
+                continue
             spare = w.capacity - self.in_flight[w.id]
             if model in w.models and spare > 0 and is_live(w, generation, now):
                 # Most spare capacity; the lowest ID breaks a tie.
@@ -396,19 +398,40 @@ class Router:
         return best[1]
 
     @contextlib.asynccontextmanager
-    async def lease(self, pool, model: str, now: datetime):
+    async def lease(self, pool, model: str, now: datetime, exclude: frozenset[str] = frozenset()):
+        """The live worker for `model` with the most spare capacity, not in
+        `exclude` (workers already tried for this turn), counted in flight
+        until the block ends."""
         async with pool.connection() as conn:
             workers = await list_workers(conn)
             generation = (await join_token(conn))["generation"]
             enabled = await enabled_models(conn)
         # No await between pick and the increment, so two requests cannot
         # both take a worker's last slot.
-        worker = self.pick(workers, generation, enabled, model, now)
+        worker = self.pick(workers, generation, enabled, model, now, exclude)
         self.in_flight[worker.id] += 1
         try:
             yield worker
         finally:
             self.in_flight[worker.id] -= 1
+
+
+async def mark_down(pool, worker_id: str) -> None:
+    """A request could not connect: treat the worker as down at once. Its
+    next heartbeat brings it back."""
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE workers SET last_heartbeat = last_heartbeat - %s WHERE id = %s", (DOWN_AFTER, worker_id))
+
+
+async def offered_models(pool, now: datetime) -> list[str]:
+    """Models that are turned on and offered by at least one live worker."""
+    async with pool.connection() as conn:
+        workers = await list_workers(conn)
+        generation = (await join_token(conn))["generation"]
+        enabled = await enabled_models(conn)
+    live = {m for w in workers if is_live(w, generation, now) for m in w.models}
+    return sorted(enabled & live)
 
 
 # Staff endpoints. Admin only, except models, which teachers manage too (R3.1).

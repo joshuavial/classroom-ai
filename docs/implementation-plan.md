@@ -79,6 +79,8 @@ Requirements: R4.1-R4.4, acceptance 3 (minus the teacher side), 4, 6.
 
 Checks: API tests with the fake worker for streaming, storage before send, disabled model refused, limit reached, worker failover, worker drop mid-reply stored as error. Manual: phone and laptop on the Mac's LAN address.
 
+Delivered 2026-10-11: everything listed above, with the guard seam in `app/guard.py` that step 6 fills and migration `006_chat.sql` (`pending` status, `shown_length`, `verdict`). Acceptance 4: a model turned off is refused by the server at once and drops out of an open picker within 15 seconds.
+
 ## 5. Guard bake-off (parallel with 1-4)
 
 Outcome: a measured choice of guard model for step 6, recorded in `docs/guard-results.md`.

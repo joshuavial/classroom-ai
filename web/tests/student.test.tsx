@@ -30,7 +30,7 @@ test("a signed-in student sees the header and the monitoring notice", async () =
 test("a paused class says so", async () => {
   mockApi({ "GET /student/me": { body: { student: { ...aroha, state: "paused" } } } });
   render(<StudentPage />);
-  expect(await screen.findByRole("status")).toHaveTextContent("paused the class");
+  expect(await screen.findByText(/paused the class/)).toBeInTheDocument();
 });
 
 test("joining with a code shows the header", async () => {
