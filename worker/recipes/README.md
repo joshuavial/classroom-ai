@@ -31,3 +31,24 @@ Keep Ollama off the network:
 ## When the server cannot reach the agent
 
 The server calls the agent at the address its heartbeat came from, port 8081. When that address is wrong, set `WORKER_URL` for the agent to an address the server can reach. The usual case is a worker on the same machine as the server, such as a Mac running both for development: `WORKER_URL=http://host.docker.internal:8081`.
+
+## Only the server reaches the agent
+
+Students' devices must not reach a worker at all (R2.6). The agent refuses requests without the worker's key, but also let only the server's address in on port 8081. The best place is the school network itself (a VLAN or switch rule for the GPU machines); on the worker:
+
+- Linux, or Ubuntu with Docker in WSL2 in NAT mode: Docker's published ports skip `ufw`, so use Docker's own chain. Replace `10.0.0.2` with the server's address. Rules added this way are lost on restart; keep them with `iptables-persistent`. **untested**
+
+  ```sh
+  sudo iptables -I DOCKER-USER -p tcp --dport 8081 ! -s 10.0.0.2 -j DROP
+  ```
+
+- Windows with WSL2 in mirrored mode, in an administrator PowerShell: **untested**
+
+  ```powershell
+  New-NetFirewallHyperVRule -Name classroom-ai-agent -DisplayName "classroom-ai agent" -Direction Inbound `
+      -VMCreatorId '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}' -Protocol TCP -LocalPorts 8081 -RemoteAddresses 10.0.0.2
+  ```
+
+- Mac: the macOS firewall filters by app, not by address, so use the network rule above. **untested**
+
+Check from a student device: `curl http://<worker address>:8081/v1/models` must time out or be refused, while the admin page still shows the worker up.

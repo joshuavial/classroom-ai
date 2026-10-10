@@ -477,3 +477,52 @@ async def test_simultaneous_leases_never_exceed_capacity(env):
     await asyncio.gather(*tasks)
     assert sorted(got, key=str) == [1, 2, 3, "none", "none"]
     assert router.in_flight[worker_id] == 0
+
+
+# Join command
+
+HOSTILE = "it's $(touch pwned) `id` ; \"x\" \\ %PATH%"
+PEM = "-----BEGIN CERTIFICATE-----\nMIIB'x\n$(touch pwned)\n-----END CERTIFICATE-----"
+
+
+def test_bash_join_command_passes_values_through_exactly(tmp_path):
+    import subprocess
+
+    (tmp_path / "worker").mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "docker").write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$SERVER_URL" "$JOIN_TOKEN" "$WORKER_URL" "$*" > out.txt\n')
+    (bin_dir / "docker").chmod(0o755)
+    cmd = workers.join_commands("https://classroom.lan", HOSTILE, PEM, "http://h:8081")["bash"]
+    subprocess.run(["bash", "-c", cmd], cwd=tmp_path, check=True,
+                   env={"PATH": f"{bin_dir}:/usr/bin:/bin"})
+    assert (tmp_path / "out.txt").read_text().splitlines() == [
+        "https://classroom.lan", HOSTILE, "http://h:8081", "compose -f worker/compose.yml up -d --build"]
+    assert (tmp_path / "worker" / "server-ca.crt").read_text() == PEM + "\n"
+    assert not (tmp_path / "pwned").exists()
+
+
+def test_powershell_join_command_passes_values_through_exactly(tmp_path):
+    import shutil
+    import subprocess
+
+    pwsh = shutil.which("pwsh")
+    if not pwsh:
+        pytest.skip("pwsh not on PATH")
+    (tmp_path / "worker").mkdir()
+    cmd = workers.join_commands("https://classroom.lan", HOSTILE, PEM)["powershell"]
+    script = ('function docker { Set-Content out.txt -Value @($env:SERVER_URL, $env:JOIN_TOKEN, ($args -join " ")) }\n'
+              + cmd)
+    subprocess.run([pwsh, "-NoProfile", "-Command", script], cwd=tmp_path, check=True)
+    assert (tmp_path / "out.txt").read_text().splitlines() == [
+        "https://classroom.lan", HOSTILE, "compose -f worker/compose.yml up -d --build"]
+    assert (tmp_path / "worker" / "server-ca.crt").read_text().strip() == PEM
+    assert not (tmp_path / "pwned").exists()
+
+
+def test_join_command_without_certificate_or_worker_url():
+    c = workers.join_commands("http://10.0.0.2", "tok")
+    assert c["bash"] == "SERVER_URL=http://10.0.0.2 JOIN_TOKEN=tok docker compose -f worker/compose.yml up -d --build"
+    assert c["powershell"] == ("$env:SERVER_URL='http://10.0.0.2'; $env:JOIN_TOKEN='tok'; "
+                               "docker compose -f worker/compose.yml up -d --build")

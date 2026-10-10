@@ -11,6 +11,7 @@ import hmac
 import ipaddress
 import json
 import secrets
+import shlex
 import socket
 import urllib.parse
 import uuid
@@ -296,6 +297,30 @@ async def list_workers(conn) -> list[Worker]:
 async def enabled_models(conn) -> set[str]:
     cur = await conn.execute("SELECT name FROM models WHERE enabled")
     return {row[0] for row in await cur.fetchall()}
+
+
+# Join command
+
+
+def powershell_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def join_commands(server_url: str, token: str, ca_pem: str | None = None,
+                  worker_url: str | None = None) -> dict[str, str]:
+    """The one-line join command, in bash and PowerShell forms, run from the
+    repository checkout on the worker."""
+    env = {"SERVER_URL": server_url, "JOIN_TOKEN": token}
+    if worker_url:
+        env["WORKER_URL"] = worker_url
+    up = "docker compose -f worker/compose.yml up -d --build"
+    bash = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items()) + " " + up
+    powershell = "; ".join(f"$env:{k}={powershell_quote(v)}" for k, v in env.items()) + "; " + up
+    if ca_pem:
+        bash = f"printf '%s\\n' {shlex.quote(ca_pem.strip())} > worker/server-ca.crt && {bash}"
+        powershell = (f"Set-Content -Path worker/server-ca.crt -Value {powershell_quote(ca_pem.strip())}; "
+                      + powershell)
+    return {"bash": bash, "powershell": powershell}
 
 
 # Routing
