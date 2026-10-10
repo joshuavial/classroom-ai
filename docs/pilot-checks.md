@@ -2,8 +2,8 @@
 
 Use this checklist for the Windows 11 NVIDIA test machine and for the physical
 phone LAN check. It records how to run the checks and where to record the
-results. No check in this document is a claimed result. Leave `Pass/fail` as
-`not run` until the check has been performed.
+results. No hardware check in this document is a claimed result. Leave
+`Pass/fail` as `not run` until the check has been performed.
 
 If a check fails, create a Beads issue. Put the issue ID in that row's `Notes`
 column. Record enough detail to reproduce the failure, including the machine,
@@ -223,3 +223,14 @@ each repeat.
 | --- | --- | --- | --- | --- |
 | Pilot baseline after Step 6, 30 students | not run |  |  |  |
 | Repeat, if first reply is far over five seconds | not run |  |  |  |
+
+## 4. Step 7 engineering browser check
+
+- Host: macOS with Docker Desktop.
+- Browser: Playwright Chromium, first at the default laptop viewport and then at an 820 x 1180 iPad-class viewport.
+- Participants: one teacher context and two isolated student browser contexts.
+- Stack: fresh isolated Compose projects for the server and worker, the real worker agent, and the repository fake compatible model backend. The guard seam was disabled for this smoke because guard service integration belongs to step 6.
+- Result: passed at both viewports. Both student cards appeared without a reload. One student received the streamed reply, and the matching teacher card showed it within five seconds. The second card remained separate. The usage strip reported one student message and one model conversation. The iPad-class page had no horizontal clipping or overlapping controls.
+- Visual artifact: `.etude/tmp/cai-1ir.8/ipad-console.png`, SHA-256 `00eee80916ea338c3a431cf6defed17358d1d779894191633253ce176384ca04`.
+
+The physical laptop and iPad Safari pass, including print preview, keyboard-only use, rotation and 200 percent text zoom, remains open on `cai-1ir.31`.

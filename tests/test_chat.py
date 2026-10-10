@@ -159,6 +159,33 @@ async def test_reply_streams_and_is_stored(setup, dsn):
     assert [m["text"] for m in transcript] == ["What is a cell?", "Hello there"]
 
 
+async def test_stored_messages_notify_the_right_session_across_app_processes(setup, dsn):
+    app, _ = setup
+    teacher, student, session_id, roster = await lesson(app, dsn)
+    conversation_id = await conversation(student)
+    other = create_app(dsn, guard_disabled=True)
+    async with other.router.lifespan_context(other):
+        right = other.state.hub.subscribe(session_id)
+        wrong_id = session_id + 1_000_000
+        wrong = other.state.hub.subscribe(wrong_id)
+        try:
+            response = await send(student, conversation_id, "hello")
+            assert response.status_code == 200
+            notices = [await asyncio.wait_for(right.get(), 5) for _ in range(2)]
+            assert [notice["k"] for notice in notices] == ["message", "message"]
+            assert [notice["student"] for notice in notices] == [roster[0]["id"], roster[0]["id"]]
+            assert notices[0]["message"] != notices[1]["message"]
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(right.get(), 0.3)
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(wrong.get(), 0.3)
+        finally:
+            other.state.hub.unsubscribe(session_id, right)
+            other.state.hub.unsubscribe(wrong_id, wrong)
+            await teacher.aclose()
+            await student.aclose()
+
+
 @pytest.mark.parametrize("ending", [["LENGTH"], ["DONE"]])
 async def test_length_or_done_without_stop_is_a_normal_end(setup, dsn, ending):
     app, fake = setup

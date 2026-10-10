@@ -1,0 +1,94 @@
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+}
+
+@media (min-width: 900px) {
+  .layout.open {
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  }
+}
+
+.usage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.5rem;
+  padding: 0.5rem 0.75rem;
+  background: #f2f4f7;
+  border-radius: 6px;
+  margin: 0.5rem 0;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: 0.75rem;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.card {
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  padding: 0.75rem;
+  border: 2px solid #c8ccd2;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+  min-height: 7rem;
+}
+
+.card.flagged {
+  border-color: #b00020;
+  border-width: 3px;
+}
+
+.card.selected {
+  outline: 3px solid #10324a;
+  outline-offset: 2px;
+}
+
+.badge {
+  display: inline-block;
+  background: #b00020;
+  color: #fff;
+  border-radius: 4px;
+  padding: 0 0.4rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  margin-left: 0.5rem;
+}
+
+.latest {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: #333;
+  margin: 0.4rem 0 0;
+}
+
+.panel {
+  border: 1px solid #c8ccd2;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  align-self: start;
+}
+
+.message {
+  border-bottom: 1px solid #eee;
+  padding: 0.5rem 0;
+}
+
+.blocked {
+  background: #fdecee;
+}
+
+.flag {
+  border-left: 4px solid #b00020;
+  padding-left: 0.5rem;
+  margin-top: 0.25rem;
+}

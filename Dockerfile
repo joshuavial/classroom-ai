@@ -21,4 +21,5 @@ COPY app ./app
 RUN useradd --system --no-create-home app
 USER app
 EXPOSE 8000
-CMD ["/venv/bin/uvicorn", "app.main:from_env", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+# Open live streams would otherwise hold a stop until Docker kills the process.
+CMD ["/venv/bin/uvicorn", "app.main:from_env", "--factory", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "5"]

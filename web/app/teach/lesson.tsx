@@ -1,7 +1,9 @@
 "use client";
 
-import { type FormEvent, useCallback, useEffect, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, api } from "@/lib/api";
+import { useLiveSession } from "@/lib/live";
+import { Console } from "@/app/teach/console";
 import { onAuthError } from "@/lib/session";
 import type { LessonSession, LessonState, RosterEntry } from "@/lib/types";
 import styles from "@/app/teach/teach.module.css";
@@ -58,22 +60,34 @@ export function Lesson({ sessionId, onEnded }: { sessionId: number; onEnded: () 
   const [session, setSession] = useState<LessonSession | null>(null);
   const [message, setMessage] = useState("");
   const [now, setNow] = useState(() => Date.now());
+  const loadVersion = useRef(0);
 
-  const load = useCallback(
-    () =>
-      api<LessonSession>(`/sessions/${sessionId}`)
-        .then(setSession)
-        .catch((e: unknown) => {
-          onAuthError(e);
-          setMessage("Could not load the lesson.");
-        }),
-    [sessionId],
-  );
+  const load = useCallback(async () => {
+    const version = ++loadVersion.current;
+    try {
+      const next = await api<LessonSession>(`/sessions/${sessionId}`);
+      if (version === loadVersion.current) setSession(next);
+    } catch (e) {
+      if (version !== loadVersion.current) return;
+      onAuthError(e);
+      setMessage("Could not load the lesson.");
+    }
+  }, [sessionId]);
   useEffect(() => {
+    // Load at once, even if the live stream never connects; the stream's
+    // "hello" then reloads, which costs one extra fetch on mount.
     load();
     const timer = setInterval(() => setNow(Date.now()), 30000);
     return () => clearInterval(timer);
   }, [load]);
+  // Live: each change (a join, the roster, the state, a message or flag) or a
+  // reconnect reloads the roster and bumps `version` so the console reloads.
+  const [version, setVersion] = useState(0);
+  const refresh = useCallback(() => {
+    load();
+    setVersion((v) => v + 1);
+  }, [load]);
+  useLiveSession(sessionId, refresh);
 
   async function setState(state: LessonState) {
     if (state === "closed" && !window.confirm("Close the lesson? Every code stops working and students are signed out."))
@@ -129,6 +143,7 @@ export function Lesson({ sessionId, onEnded }: { sessionId: number; onEnded: () 
         </form>
       </div>
       <p role="status">{message}</p>
+      <Console sessionId={session.id} version={version} />
       <h3>
         Codes ({used} of {session.roster.length} used) <button type="button" onClick={load}>Refresh</button>
       </h3>

@@ -38,3 +38,40 @@ export type ChatMessage = {
   text: string;
   status: string;
 };
+
+export type StudentCard = {
+  id: number;
+  name: string;
+  code: string;
+  messages: number;
+  latest: { role: "user" | "assistant"; text: string; status: string; at: string } | null;
+  unreviewed_flags: number;
+  last_active: string | null;
+};
+
+export type Usage = {
+  active_students: number;
+  total_messages: number;
+  per_student: { id: number; name: string; messages: number }[];
+  models: { model: string; conversations: number }[];
+  flags_by_category: { category: string; flags: number }[];
+};
+
+export type Flag = {
+  id: number;
+  category: string;
+  action: string;
+  at: string;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+};
+
+export type Transcript = {
+  student: { id: number; name: string; code: string; removed: boolean };
+  conversations: {
+    id: number;
+    model: string;
+    started_at: string;
+    messages: { id: number; role: "user" | "assistant"; text: string; status: string; at: string; flags: Flag[] }[];
+  }[];
+};

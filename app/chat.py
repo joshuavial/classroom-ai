@@ -9,7 +9,7 @@ The order is fixed (docs/architecture.md "Turn pipeline"):
 3. Lease a live worker, send the class instructions and this conversation's
    approved text, and stream the reply through the guard's reply gate.
 4. Store the whole reply, how much of it the student was shown, and the
-   verdicts.
+   verdicts, then tell the teacher's live view.
 
 Before the stream starts, problems answer with an HTTP status; once it has
 started they arrive as `error` or `blocked` events. Chat text never goes to
@@ -31,6 +31,7 @@ from starlette.routing import Route
 from app import guard, workers
 from app.auth import HTTPError, json_body, require_student
 from app.classes import iso, path_id
+from app.live import publish
 
 log = logging.getLogger("app.chat")
 
@@ -156,13 +157,13 @@ async def messages_used(conn, student_id: int) -> int:
     return (await cur.fetchone())[0]
 
 
-async def admit(request: Request, student: dict, conversation_id: int, text: str) -> tuple[int, str, str]:
+async def admit(request: Request, student: dict, conversation_id: int, text: str) -> tuple[int, str, str, int]:
     """Step 1: checks and the pending user row, under the student row lock.
-    Returns (user message id, model, class instructions)."""
+    Returns (user message id, model, class instructions, lesson session id)."""
     pool = request.app.state.pool
     async with pool.connection() as conn, conn.transaction():
         cur = await conn.execute(
-            "SELECT l.state, c.message_limit, c.instructions FROM students st"
+            "SELECT l.state, c.message_limit, c.instructions, l.id FROM students st"
             " JOIN lesson_sessions l ON l.id = st.lesson_session_id JOIN classes c ON c.id = l.class_id"
             " WHERE st.id = %s AND st.name IS NOT NULL AND NOT st.removed FOR UPDATE OF st",
             (student["id"],),
@@ -170,7 +171,7 @@ async def admit(request: Request, student: dict, conversation_id: int, text: str
         row = await cur.fetchone()
         if row is None or row[0] == "closed":
             raise HTTPError(401, "not_signed_in")
-        state, limit, instructions = row
+        state, limit, instructions, lesson_id = row
         if state == "paused":
             raise HTTPError(409, "paused")
         model = await own_conversation(conn, student, conversation_id)
@@ -185,7 +186,7 @@ async def admit(request: Request, student: dict, conversation_id: int, text: str
             (conversation_id, text),
         )
         message_id = (await cur.fetchone())[0]
-    return message_id, model, instructions
+    return message_id, model, instructions, lesson_id
 
 
 async def store_verdict(conn, message_id: int, verdict: guard.Verdict, status: str) -> None:
@@ -270,7 +271,7 @@ async def send_message(request: Request):
     text = text.strip()
     app, pool = request.app, request.app.state.pool
 
-    message_id, model, instructions = await admit(request, student, conversation_id, text)
+    message_id, model, instructions, lesson_id = await admit(request, student, conversation_id, text)
     ctx = guard.Context(conversation_id, message_id, text)
 
     # Step 2, shielded so a disconnect cannot leave the verdict half stored.
@@ -278,18 +279,20 @@ async def send_message(request: Request):
         try:
             verdict = await guard.check_prompt(app, ctx)
         except guard.GuardUnavailable:
-            async with pool.connection() as conn:
+            async with pool.connection() as conn, conn.transaction():
                 await conn.execute("UPDATE messages SET status = 'error' WHERE id = %s", (message_id,))
+                await publish(conn, lesson_id, "message", student=student["id"], message=message_id)
             log.warning("guard unavailable; message %s refused", message_id)
             raise HTTPError(503, "chat_unavailable") from None
         status = "blocked" if verdict.blocks else "ok"
         async with pool.connection() as conn, conn.transaction():
             await store_verdict(conn, message_id, verdict, status)
+            await publish(conn, lesson_id, "message", student=student["id"], message=message_id)
             body = {"model": model, "stream": True, "messages": await history(conn, conversation_id, instructions)}
     if verdict.blocks:
         return JSONResponse({"blocked": verdict.message})
 
-    return ClosingStreamingResponse(reply(app, pool, ctx, model, body),
+    return ClosingStreamingResponse(reply(app, pool, ctx, student, lesson_id, model, body),
                                     media_type="text/event-stream", headers={"Cache-Control": "no-store"})
 
 
@@ -318,7 +321,7 @@ class ClosingStreamingResponse(StreamingResponse):
                     await close()
 
 
-async def reply(app, pool, ctx: guard.Context, model: str, body: dict):
+async def reply(app, pool, ctx: guard.Context, student: dict, lesson_id: int, model: str, body: dict):
     """Steps 3 and 4: stream the reply, then store it."""
     try:
         async with pool.connection() as conn:
@@ -354,6 +357,7 @@ async def reply(app, pool, ctx: guard.Context, model: str, body: dict):
                          Jsonb(deciding.to_json()) if deciding else None, reply_id),
                     )
                     await store_flags(conn, reply_id, verdicts)
+                    await publish(conn, lesson_id, "message", student=student["id"], message=reply_id)
                 return True
             except Exception as exc:
                 log.error("could not store reply %s: %s", reply_id, type(exc).__name__)

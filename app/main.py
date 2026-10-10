@@ -16,7 +16,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from app import auth, chat, classes, db, guard, guard_settings, records, students, workers
+from app import auth, chat, classes, console, db, guard, guard_settings, live, records, students, workers
 
 log = logging.getLogger("app")
 
@@ -96,6 +96,8 @@ def create_app(
             app.state.router = workers.Router()
             app.state.dsn = dsn
             retention = asyncio.create_task(records.retention_loop(pool, clock))
+            app.state.hub = live.Hub(dsn)
+            await app.state.hub.start()
             try:
                 async with httpx.AsyncClient(transport=worker_transport) as worker_client:
                     app.state.worker_client = worker_client
@@ -104,12 +106,14 @@ def create_app(
                 retention.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await retention
+                await app.state.hub.stop()
         finally:
             await pool.close()
 
     app = Starlette(
         routes=[Route("/healthz", healthz), *auth.routes, *classes.routes, *students.routes,
-                *workers.routes, *guard_settings.routes, *records.routes, *chat.routes],
+                *workers.routes, *guard_settings.routes, *live.routes, *console.routes,
+                *records.routes, *chat.routes],
         middleware=[Middleware(auth.CSRFMiddleware)],
         exception_handlers={
             auth.HTTPError: auth.http_error,

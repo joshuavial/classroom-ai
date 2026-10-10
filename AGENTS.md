@@ -16,6 +16,7 @@ Prerequisites: Docker (any Docker-compatible runtime on the Mac), uv, Node.js 24
 uv sync                          # Python 3.14 venv with app and test dependencies
 uv run pytest                    # app tests; starts one postgres:18.6 container for the session
 (cd web && npm ci && npm test)   # web tests (Vitest); `npm run typecheck` for tsc
+(cd web && PLAYWRIGHT_BROWSERS_PATH=0 npx playwright install chromium && npm run e2e)  # browser smoke on a fresh stack
 ./scripts/init-env.sh            # once: writes .env with generated database credentials
 docker compose up -d --build     # server stack on http://localhost (127.0.0.1 only; HTTP_PORT=8080 for another port)
 curl localhost/healthz           # {"status":"ok","db":"ok"}

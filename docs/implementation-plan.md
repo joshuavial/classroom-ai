@@ -119,12 +119,14 @@ Outcome: the teacher watches the class live, opens transcripts, reviews flags an
 
 - `NOTIFY` on each stored message, flag, join and state change. `live.py` `LISTEN`s and fans out to the SSE endpoint per lesson session, reconnect then resync.
 - Teacher page in `web/` as specified in the architecture's Teacher console section: session bar, card grid, usage strip, transcript panel, mark reviewed. The SSE stream is read in the browser with `EventSource`.
-- Playwright smoke in `web/e2e/` against the compose stack with the fake worker and fake guard: a student joins and chats, and the teacher sees it.
+- Playwright smoke in `web/e2e/` against the compose stack with the real worker agent, a fake compatible model backend and the explicit unguarded test seam: two students join, one chats, and the teacher sees it.
 - `docs/manual-tests.md` for the console on laptop and iPad.
 
 Requirements: R5.1-R5.5, R6.7, D1 usage summary, acceptance 3 (teacher side within five seconds), 9.
 
 Checks: API tests that a stored message, flag, join and state change each produce one event on the right session's stream and none on another, including with two app processes. Vitest tests for the card grid, transcript panel and usage strip. The Playwright smoke passes. Manual tests file run on the Mac with two student devices.
+
+Delivered 2026-10-11: `app/live.py` publishes join, state, roster, stored-message and reviewed-flag events through PostgreSQL, with per-process fan-out, bounded queues, reconnect resync and an authenticated SSE endpoint. The teacher view has the card grid, usage strip, transcript panel and once-only flag review, with request generations preventing stale live refreshes. The Playwright smoke joins a real worker agent to a fake compatible backend, streams a student reply and checks that the teacher sees it within five seconds. `docs/manual-tests.md` covers the laptop and iPad console checks.
 
 ## 8. Records and audit
 
@@ -141,7 +143,7 @@ Requirements: R1.5, R7.1-R7.4, acceptance 10.
 
 Checks: retention test with a fake clock. Export contents test. Backup, wipe, restore round trip on a populated database. Each staff action writes one audit row.
 
-Delivered so far (2026-10-11): `app/records.py` (hourly retention that locks before it deletes, export and delete one student), `scripts/backup.sh` and `scripts/restore.sh` (restore in one transaction), admin endpoints for the audit log, the retention setting, export, delete and the backup download (the app image carries the PostgreSQL 18 client), and a Records section on `/admin`. Backup, wipe with `docker compose down -v`, restore returned the same rows on a Mac. A student list on the admin page (removed students too) exports or deletes one student, the backup download is a POST, and `docs/install.md` has a backup and restore section. Still to do: audit rows for flag reviews (step 7; session state changes are already audited by step 3).
+Delivered so far (2026-10-11): `app/records.py` (hourly retention that locks before it deletes, export and delete one student), `scripts/backup.sh` and `scripts/restore.sh` (restore in one transaction), admin endpoints for the audit log, the retention setting, export, delete and the backup download (the app image carries the PostgreSQL 18 client), and a Records section on `/admin`. Backup, wipe with `docker compose down -v`, restore returned the same rows on a Mac. A student list on the admin page (removed students too) exports or deletes one student, the backup download is a POST, and `docs/install.md` has a backup and restore section. Flag review writes one `flag.review` audit row in the review transaction with only the flag and message ids; session state changes are audited by step 3.
 
 ## 9. Install, TLS and Windows
 

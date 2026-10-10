@@ -25,6 +25,8 @@ from app.auth import (
     student_from_row,
 )
 
+from app.live import publish
+
 log = logging.getLogger("app.students")
 CODE = re.compile(r"^[0-9]{6}$")
 
@@ -110,6 +112,7 @@ async def join(request: Request) -> JSONResponse:
             student["name"] = name
         response = JSONResponse(public(student))
         await start_session(conn, request, response, student_id=student["id"])
+        await publish(conn, student["lesson_session_id"], "join", student=student["id"])
     limiter.forgive(ip, attempt)
     return response
 

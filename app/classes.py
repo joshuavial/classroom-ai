@@ -13,6 +13,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from app.auth import HTTPError, audit, json_body, require_staff
+from app.live import publish
 from app.students import clean_student_name, has_bad_characters
 
 CODES_LOCK_KEY = 7_311_007
@@ -253,6 +254,7 @@ async def set_state(request: Request) -> JSONResponse:
                 (session_id,),
             )
         await audit(conn, staff["id"], staff["username"], f"session.{state}", {"session_id": session_id})
+        await publish(conn, session_id, "state")
     return JSONResponse({"id": session_id, "state": state})
 
 
@@ -273,6 +275,7 @@ async def more_codes(request: Request) -> JSONResponse:
         codes = await generate_codes(conn, session_id, count)
         await audit(conn, staff["id"], staff["username"], "session.codes",
                     {"session_id": session_id, "codes": count})
+        await publish(conn, session_id, "roster")
     return JSONResponse({"codes": codes}, status_code=201)
 
 
@@ -307,6 +310,7 @@ async def rename_student(request: Request) -> JSONResponse:
         await conn.execute("UPDATE students SET name = %s WHERE id = %s", (name, student_id))
         await audit(conn, staff["id"], staff["username"], "student.rename",
                     {"student_id": student_id, "from": student["name"], "to": name})
+        await publish(conn, student["lesson_session_id"], "roster", student=student_id)
     return JSONResponse({"id": student_id, "name": name})
 
 
@@ -332,6 +336,7 @@ async def unbind_student(request: Request) -> JSONResponse:
         await end_student_sessions(conn, student_id)
         await audit(conn, staff["id"], staff["username"], "student.unbind",
                     {"student_id": student_id, "name": student["name"]})
+        await publish(conn, student["lesson_session_id"], "roster", student=student_id)
     return JSONResponse({"id": fresh, "code": student["code"], "name": None})
 
 
@@ -345,6 +350,7 @@ async def remove_student(request: Request) -> JSONResponse:
         await end_student_sessions(conn, student_id)
         await audit(conn, staff["id"], staff["username"], "student.remove",
                     {"student_id": student_id, "name": student["name"]})
+        await publish(conn, student["lesson_session_id"], "roster", student=student_id)
     return JSONResponse({"id": student_id, "removed": True})
 
 
