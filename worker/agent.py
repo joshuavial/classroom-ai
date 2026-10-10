@@ -9,6 +9,9 @@ Configuration, from the environment:
   WORKER_URL      optional; how the server reaches this agent when the
                   address it sees the heartbeat come from is not reachable
   IDENTITY_PATH   where the worker ID and API key live (default /data/identity.json)
+  SERVER_CA       the server's root certificate, used to check SERVER_URL over
+                  HTTPS (default /etc/classroom-ai/server-ca.crt, which
+                  worker/compose.yml mounts from worker/server-ca.crt)
 """
 
 import asyncio
@@ -18,6 +21,7 @@ import json
 import logging
 import os
 import secrets
+import ssl
 import tempfile
 import uuid
 from collections.abc import Awaitable, Callable
@@ -60,6 +64,7 @@ class Config:
     backend_url: str
     max_concurrent: int = 4
     worker_url: str | None = None
+    server_ca: str | None = None
 
 
 def load_identity(path: Path) -> Identity:
@@ -161,6 +166,11 @@ async def heartbeat_loop(
         await sleep(HEARTBEAT_SECONDS)
 
 
+def server_verify(config: Config) -> ssl.SSLContext | bool:
+    """Trust the server's own root certificate when there is one."""
+    return ssl.create_default_context(cafile=config.server_ca) if config.server_ca else True
+
+
 def create_app(
     config: Config,
     identity: Identity,
@@ -211,7 +221,7 @@ def create_app(
                 httpx.AsyncClient(timeout=BACKEND_TIMEOUT)
             )
             server_client = server or await stack.enter_async_context(
-                httpx.AsyncClient(timeout=SERVER_TIMEOUT)
+                httpx.AsyncClient(timeout=SERVER_TIMEOUT, verify=server_verify(config))
             )
             task = None
             if heartbeat:
@@ -245,12 +255,14 @@ def from_env() -> Starlette:
     max_concurrent = int(env.get("MAX_CONCURRENT") or 4)
     if not 1 <= max_concurrent <= 64:
         raise SystemExit("MAX_CONCURRENT must be between 1 and 64")
+    ca = env.get("SERVER_CA", "/etc/classroom-ai/server-ca.crt")
     config = Config(
         server_url=env["SERVER_URL"].rstrip("/"),
         join_token=env["JOIN_TOKEN"],
         backend_url=env["BACKEND_URL"].rstrip("/"),
         max_concurrent=max_concurrent,
         worker_url=env.get("WORKER_URL") or None,
+        server_ca=ca if Path(ca).is_file() else None,
     )
     identity = load_identity(Path(env.get("IDENTITY_PATH", "/data/identity.json")))
     log.info("worker %s starting, backend %s", identity.worker_id, config.backend_url)
