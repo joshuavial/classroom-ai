@@ -1,5 +1,10 @@
 # Plain HTTP on localhost for development. TLS comes with step 9.
 :80 {
+	# The app refuses JSON bodies over 64 KiB; this stops anything far larger
+	# before it reaches the app.
+	request_body {
+		max_size 1MB
+	}
 	handle /api/* {
 		reverse_proxy app:8000
 	}

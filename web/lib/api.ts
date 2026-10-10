@@ -1,6 +1,7 @@
 // JSON calls to the Python app under /api. Same origin, so the session cookie
 // goes with every request. State-changing requests also send the CSRF token
-// from the csrf_token cookie in the X-CSRF-Token header (double-submit).
+// from the csrf_token cookie in the X-CSRF-Token header. A browser with no
+// token yet (first visit, or after sign out) gets one from GET /api/me first.
 
 export const CSRF_COOKIE = "csrf_token";
 export const CSRF_HEADER = "X-CSRF-Token";
@@ -30,6 +31,9 @@ export async function api<T = unknown>(
   const headers: Record<string, string> = { Accept: "application/json" };
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
   if (method !== "GET" && method !== "HEAD") {
+    if (!readCookie(CSRF_COOKIE)) {
+      await fetch("/api/me", { credentials: "same-origin", headers: { Accept: "application/json" } });
+    }
     const token = readCookie(CSRF_COOKIE);
     if (token) headers[CSRF_HEADER] = token;
   }

@@ -47,3 +47,15 @@ test("a non-JSON error body still throws ApiError with the status", async () => 
   expect(error.status).toBe(502);
   expect(error.body).toBe("Bad Gateway");
 });
+
+test("a POST with no token fetches /api/me first to get one", async () => {
+  const fn = vi.fn(async (url: string, _init?: RequestInit) => {
+    if (url === "/api/me") document.cookie = "csrf_token=fresh";
+    return new Response("{}", { status: 200 });
+  });
+  vi.stubGlobal("fetch", fn);
+  await api("/login", { method: "POST", body: {} });
+  expect(fn.mock.calls.map((c) => c[0])).toEqual(["/api/me", "/api/login"]);
+  const init = fn.mock.calls[1][1] as RequestInit;
+  expect((init.headers as Record<string, string>)["X-CSRF-Token"]).toBe("fresh");
+});

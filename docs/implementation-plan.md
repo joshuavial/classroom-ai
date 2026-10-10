@@ -31,6 +31,8 @@ Requirements: R1.2, part of R7.4 (audit rows for account changes).
 
 Checks: API tests for setup-once, wrong code, login, role enforcement, CSRF rejection, audit rows. Vitest tests for the setup and login pages.
 
+Delivered 2026-10-10: everything listed above, plus a staff list and "create staff account" form on `/admin`. Migration `002_staff_auth.sql` adds the per-session CSRF token. No staff delete or password change yet.
+
 ## 2. Worker registry and the worker stack (parallel with 1)
 
 Outcome: on the Mac, the agent in front of a native Ollama (or llama-server) running Gemma 4 E2B shows up in the app as a worker with its models.

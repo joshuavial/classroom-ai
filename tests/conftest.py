@@ -77,6 +77,23 @@ async def app(dsn: str):
 
 @pytest.fixture
 async def client(app):
+    # https so Secure cookies are sent back, as in a browser.
+    app.state.limiter.reset()
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+    async with httpx.AsyncClient(transport=transport, base_url="https://test") as c:
+        yield c
+
+
+@pytest.fixture
+async def fresh_app(empty_dsn):
+    """An app on its own new database, for first-run setup tests."""
+    application = create_app(empty_dsn)
+    async with application.router.lifespan_context(application):
+        yield application
+
+
+@pytest.fixture
+async def fresh_client(fresh_app):
+    transport = httpx.ASGITransport(app=fresh_app)
+    async with httpx.AsyncClient(transport=transport, base_url="https://test") as c:
         yield c

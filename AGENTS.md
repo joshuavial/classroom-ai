@@ -17,7 +17,7 @@ uv sync                          # Python 3.14 venv with app and test dependenci
 uv run pytest                    # app tests; starts one postgres:18.6 container for the session
 (cd web && npm ci && npm test)   # web tests (Vitest); `npm run typecheck` for tsc
 ./scripts/init-env.sh            # once: writes .env with generated database credentials
-docker compose up -d --build     # server stack on http://localhost (bound to 127.0.0.1 only)
+docker compose up -d --build     # server stack on http://localhost (127.0.0.1 only; HTTP_PORT=8080 for another port)
 curl localhost/healthz           # {"status":"ok","db":"ok"}
 docker compose down              # add -v to drop the database volume too
 ```

@@ -4,7 +4,8 @@ services:
     image: caddy:2.11.7@sha256:f2a1290d0463aad60660d4ec134943f183ee2a5f6c3eb7bf32dd984f2f020772
     restart: unless-stopped
     ports:
-      - "127.0.0.1:80:80"
+      # HTTP_PORT lets a second stack on one machine use another host port.
+      - "127.0.0.1:${HTTP_PORT:-80}:80"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
