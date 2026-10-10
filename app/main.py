@@ -6,12 +6,13 @@ import logging
 import os
 import sys
 
+import httpx
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from app import db
+from app import db, workers
 
 log = logging.getLogger("app")
 
@@ -42,7 +43,13 @@ async def healthz(request: Request) -> JSONResponse:
     return JSONResponse({"status": "down", "db": "down"}, status_code=503)
 
 
-def create_app(dsn: str) -> Starlette:
+def create_app(
+    dsn: str,
+    worker_transport: httpx.AsyncBaseTransport | None = None,
+    clock=workers.utcnow,
+) -> Starlette:
+    """worker_transport and clock let tests stand in for workers and time."""
+
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):
         pool = await db.open_pool(dsn)
@@ -50,12 +57,24 @@ def create_app(dsn: str) -> Starlette:
             applied = await db.migrate(pool)
             if applied:
                 log.info("applied migrations %s", applied)
+            async with pool.connection() as conn:
+                await workers.ensure_join_token(conn)
             app.state.pool = pool
-            yield
+            app.state.clock = clock
+            app.state.router = workers.Router()
+            async with httpx.AsyncClient(transport=worker_transport) as worker_client:
+                app.state.worker_client = worker_client
+                yield
         finally:
             await pool.close()
 
-    return Starlette(routes=[Route("/healthz", healthz)], lifespan=lifespan)
+    return Starlette(
+        routes=[
+            Route("/healthz", healthz),
+            Route("/api/workers/heartbeat", workers.heartbeat, methods=["POST"]),
+        ],
+        lifespan=lifespan,
+    )
 
 
 def from_env() -> Starlette:

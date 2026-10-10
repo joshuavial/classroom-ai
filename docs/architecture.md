@@ -57,7 +57,7 @@ Two compose files, one per machine role. Both build from this repository, so ins
 | Guard model | Qwen3Guard-Gen-0.6B, community GGUF `mradermacher/Qwen3Guard-Gen-0.6B-GGUF` Q8_0, pinned by file hash, on a CPU llama-server | Apache-2.0, small enough for CPU, covers the R6.3 categories. Qwen publishes no GGUF, so the hash pin is how we know which weights we run. Step 5 of the implementation plan, a bake-off against Qwen3Guard-Gen-4B and Shieldstral-1.0-3B, confirms or replaces this choice. |
 | Suggested chat models in the recipes | Gemma 4: 12B-it on 16 GB, E4B-it on 8 GB, E2B-it on CPU | Apache-2.0 with official GGUFs. Qwen3 is superseded by Qwen3.5, which has only community GGUFs at the sizes we need. |
 
-Versions at time of writing: Python 3.14.8, Starlette 1.7.0, uvicorn 0.54.0, httpx 0.28.1, psycopg 3.3.6, psycopg-pool 3.3.3, PostgreSQL 18.6, Caddy 2.11.7, llama.cpp build b11433 (recipe and guard), Node.js 24.21.0, Next.js 16.4.0, React 19.3.0, TypeScript 7.0.2, Vitest 5.0.3, Playwright 1.63.0. Node.js 26 enters LTS on 2026-10-28; move to it in a release after that. Pinned versions go in `pyproject.toml`, `web/package.json` with its lockfile, `compose.yml` (images pinned by tag and digest) and the worker recipes. Upgrading means changing those pins in a release.
+Versions at time of writing: Python 3.14.8, Starlette 1.7.0, uvicorn 0.54.0, httpx 0.28.1, psycopg 3.3.6, psycopg-pool 3.3.3, PostgreSQL 18.6, Caddy 2.11.7, llama.cpp build b11434 (recipe and guard; b11433 has no published image), Node.js 24.21.0, Next.js 16.4.0, React 19.3.0, TypeScript 7.0.2, Vitest 5.0.3, Playwright 1.63.0. Node.js 26 enters LTS on 2026-10-28; move to it in a release after that. Pinned versions go in `pyproject.toml`, `web/package.json` with its lockfile, `compose.yml` (images pinned by tag and digest) and the worker recipes. Upgrading means changing those pins in a release.
 
 Five runtime Python dependencies: starlette, uvicorn, httpx, psycopg (with its binary wheel, which bundles libpq) and psycopg-pool. Tests add pytest 9.1.1 and pytest-asyncio 1.4.0. `uv` (0.12.13 in the app image) installs them from `uv.lock`.
 
@@ -132,21 +132,23 @@ A second llama-server container on the server's internal compose network, CPU on
 
 A worker is any machine running an OpenAI-compatible model server plus the agent (ADR-0007). The project doesn't dictate how the model server runs.
 
-The agent is a small Starlette app in its own Docker image (same dependencies as the server app). It does two jobs:
+The agent is `worker/agent.py`, a small Starlette app in its own Docker image. `worker/requirements.txt` pins every package it installs at the version in `uv.lock`, so the image builds from `worker/` alone and runs what the tests ran; a test fails if the two drift. The agent's tests run with the app's (`uv run pytest` collects `worker/tests`). It does two jobs:
 
-- Auth proxy. It publishes the worker's only LAN port, requires the worker's API key on every request, and forwards `/v1/chat/completions` and `/v1/models` to the model server, streaming. The model server listens only on localhost or a Docker network. This gives every backend the same auth, including Ollama, which has none of its own.
-- Heartbeat. Every 15 seconds it reads `/v1/models` from the model server and POSTs to the server's `/api/workers/heartbeat` with the join token, its address, its API key, the models it offers and its capacity (`MAX_CONCURRENT`, default 4).
+- Auth proxy. It publishes the worker's only LAN port, 8081, requires `Authorization: Bearer <API key>` on every request (compared in constant time, before the body is read), and forwards `/v1/chat/completions` and `/v1/models` to the model server, streaming chunk by chunk. The worker's key is never passed on to the model server. The model server listens only on localhost or a Docker network. This gives every backend the same auth, including Ollama, which has none of its own. A model server that cannot be reached gives 502, or 504 on a timeout. Once a reply has started, a model server failure or a gap of more than 120 seconds between chunks ends the stream early, and a client that goes away closes the request to the model server.
+- Heartbeat. Every 15 seconds it reads `/v1/models` from the model server and POSTs to the server's `/api/workers/heartbeat` with the join token as a bearer token, its worker ID, its API key, the models it offers and its capacity (`MAX_CONCURRENT`, 1 to 64, default 4). If the model server does not return a valid model list, the agent skips that heartbeat, so the worker goes down rather than staying up with models it cannot serve.
 
-Configuration is four environment variables: `SERVER_URL`, `JOIN_TOKEN`, `BACKEND_URL` and optionally `MAX_CONCURRENT`. The agent generates its API key on first start and keeps it in a volume. The join command the admin console shows is one line that sets these and runs `docker compose -f worker/compose.yml up -d`, in bash and PowerShell forms.
+Configuration is environment variables: `SERVER_URL`, `JOIN_TOKEN`, `BACKEND_URL` (default in `worker/compose.yml`: Ollama on the same machine), optionally `MAX_CONCURRENT`, and optionally `WORKER_URL` (below). On first start the agent generates a worker ID (a UUID) and a 32-byte API key and keeps them in `/data/identity.json` in a volume, readable by the agent only. A file that exists but cannot be read stops the agent rather than making a new identity, because a new ID would sidestep a removal.
+
+The worker's address is not configured. The server takes it from where the heartbeat came from: the app publishes no port, so every request reaches it through Caddy, which overwrites `X-Forwarded-For` with the client's address. The server uses that header when it holds exactly one valid IP address, otherwise the socket peer, and calls the agent at `http://<address>:8081`. When that address is not one the server can reach, the agent sends `WORKER_URL` instead, which must be `http://<host>:8081` with no path, user or query, and must not resolve to a loopback, link-local, multicast or unspecified address. The usual case is a worker on the server's own machine: `WORKER_URL=http://host.docker.internal:8081`. A heartbeat for a known worker ID with a different API key is refused, since the agent keeps its ID and key together. Before a new worker, or a worker whose address changed, is stored, the server calls `/v1/models` at that address with the worker's key. That proves the server can reach it, and stops a token holder from pointing its entry at another worker's agent, which would refuse a key that is not its own. The join command the admin console shows is one line that sets these and runs `docker compose -f worker/compose.yml up -d`, in bash and PowerShell forms.
 
 Recipes for the model server, in `worker/recipes/`:
 
-- llama-server in Docker: `nvidia` profile with `gpus: all` (on Windows: Docker Engine and the NVIDIA Container Toolkit inside WSL2, and a current NVIDIA driver on Windows itself), `cpu` profile for anything else.
-- Ollama installed natively: uses the GPU directly on Windows, Linux and the Mac (Metal). Set `OLLAMA_NUM_PARALLEL` to match `MAX_CONCURRENT`.
+- llama-server in Docker (`worker/recipes/compose.yml`, used together with `worker/compose.yml`): `nvidia` profile with an NVIDIA device reservation (on Windows: Docker Engine and the NVIDIA Container Toolkit inside WSL2, and a current NVIDIA driver on Windows itself), `cpu` profile for anything else.
+- Ollama installed natively: uses the GPU directly on Windows, Linux and the Mac (Metal). Set `OLLAMA_NUM_PARALLEL` to match `MAX_CONCURRENT`. On Linux and WSL2 Ollama listens on the Docker bridge address, never `0.0.0.0`. `worker/recipes/README.md` has the commands.
 
 On the Mac, development uses native Ollama or llama-server with Metal behind the agent, which is faster than a CPU container.
 
-Busyness: the server counts its own in-flight requests per worker and routes to the worker with the most spare capacity. That works for every backend, where llama-server's `/slots` would not.
+Busyness: the server counts its own in-flight requests per worker and routes to the worker with the most spare capacity. That works for every backend, where llama-server's `/slots` would not. Routing (`Router` in `app/workers.py`) picks, among live workers offering an enabled model, the one with the largest capacity minus requests in flight, the lowest worker ID breaking a tie, and none at all once every worker is full. It counts in-flight requests in the app process, which is correct while the app runs one uvicorn process; running a second process needs a shared counter first.
 
 ## Turn pipeline
 
@@ -190,8 +192,9 @@ Student codes can be guessed: 30 tries per minute per IP address on the join end
 
 ## Worker trust
 
-- The admin console shows the join token and can rotate it. Rotating it drops every worker until each is rejoined.
-- A heartbeat without the current token is rejected. A removed worker is put on a deny list by worker ID, so its heartbeats are rejected even with the token.
+- The admin console shows the join token and can rotate it. Rotating it drops every worker until each is rejoined. The token is stored in `settings` under `join_token` with a generation number that rotation increments; each worker row records the generation its last heartbeat carried, and a worker is live only while that matches. A heartbeat takes a share lock on the token row and rotation an update lock, so a heartbeat with the old token either commits before the rotation (and is then stale) or waits and is rejected.
+- A heartbeat without the current token is rejected, before the server makes any call to the worker. A removed worker is put on a deny list by worker ID (`workers.removed`), so its heartbeats are rejected even with the token. A heartbeat never clears `removed`, and its upsert skips a removed row, so a heartbeat racing a removal cannot bring the worker back. Removing a worker leaves the other workers serving. A machine that deletes its identity volume comes back with a new ID; to stop that too, the admin also rotates the token when removing it, at the cost of rejoining every other worker.
+- Models a worker offers for the first time are added disabled. Staff enable them; a model that disappears and comes back keeps its setting.
 - The server sends the worker's API key on every model request. A student device that reaches the agent's port without the key is refused, and the model server itself is not on the LAN (acceptance 5). The network docs add a firewall rule allowing only the server's address.
 - Server-to-worker traffic is plain HTTP on the school LAN. Sharing GPUs between schools (vision, later increment) needs that link encrypted, for example a WireGuard tunnel between the sites. Nothing else in the design assumes the worker is on the same network.
 - Model requests already carry no identity (ADR-0010): the app sends only the class instructions and the conversation text, never a student name, class name, school or user field. Keep it that way, because it is what lets a school's server anonymise traffic to another school's GPUs. Cross-school sharing adds a redaction step (for example Presidio) on requests bound for a remote worker.
@@ -211,7 +214,7 @@ PostgreSQL in the `db` service, data in the `pgdata` volume (ADR-0005). Credenti
 | `conversations` | Student, model, started time. |
 | `messages` | Conversation, role, text, time, status (ok, blocked, error), worker used. |
 | `flags` | Message, category, action taken, reviewed by, reviewed at. |
-| `workers` | ID, address, API key, models, capacity, last heartbeat, removed. |
+| `workers` | ID, address, API key, models, capacity, last heartbeat, removed, join-token generation of the last heartbeat. |
 | `models` | Model name, enabled. |
 | `settings` | Key/value: category actions and messages, retention days (30), join token. |
 | `audit` | Who, what, when, for staff actions (R7.4). |

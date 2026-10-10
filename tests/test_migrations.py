@@ -10,6 +10,9 @@ TABLES = {
     "staff", "auth_sessions", "classes", "lesson_sessions", "students", "conversations",
     "messages", "flags", "workers", "models", "settings", "audit", "schema_migrations",
 }
+# Every shipped migration. Test-only migrations are numbered from 900 so later
+# shipped ones never collide with them.
+SHIPPED = [version for version, _ in db.load_migrations()]
 
 
 def tables(dsn: str) -> set[str]:
@@ -34,15 +37,15 @@ async def run(dsn: str, schema_dir=db.SCHEMA_DIR):
 
 
 async def test_empty_database_gets_every_table(empty_dsn):
-    assert await run(empty_dsn) == [1]
+    assert await run(empty_dsn) == SHIPPED
     assert tables(empty_dsn) == TABLES
-    assert versions(empty_dsn) == [1]
+    assert versions(empty_dsn) == SHIPPED
 
 
 async def test_already_migrated_database_is_left_alone(empty_dsn):
     await run(empty_dsn)
     assert await run(empty_dsn) == []
-    assert versions(empty_dsn) == [1]
+    assert versions(empty_dsn) == SHIPPED
 
 
 async def test_concurrent_startup_applies_once(empty_dsn):
@@ -52,8 +55,8 @@ async def test_concurrent_startup_applies_once(empty_dsn):
     finally:
         for p in pools:
             await p.close()
-    assert sorted(results) == [[], [], [1]]
-    assert versions(empty_dsn) == [1]
+    assert sorted(results) == [[], [], SHIPPED]
+    assert versions(empty_dsn) == SHIPPED
 
 
 @pytest.fixture
@@ -64,19 +67,19 @@ def schema_copy(tmp_path):
 
 
 async def test_later_migrations_apply_in_order(empty_dsn, schema_copy):
-    (schema_copy / "003_c.sql").write_text("ALTER TABLE t2 ADD COLUMN c int;")
-    (schema_copy / "002_b.sql").write_text("CREATE TABLE t2 (id int);")
-    assert await run(empty_dsn, schema_copy) == [1, 2, 3]
+    (schema_copy / "902_c.sql").write_text("ALTER TABLE t2 ADD COLUMN c int;")
+    (schema_copy / "901_b.sql").write_text("CREATE TABLE t2 (id int);")
+    assert await run(empty_dsn, schema_copy) == SHIPPED + [901, 902]
 
 
 async def test_failing_migration_applies_nothing_and_can_be_retried(empty_dsn, schema_copy):
-    bad = schema_copy / "002_bad.sql"
+    bad = schema_copy / "901_bad.sql"
     bad.write_text("CREATE TABLE t2 (id int); SELECT no_such_function();")
     with pytest.raises(psycopg.errors.UndefinedFunction):
         await run(empty_dsn, schema_copy)
     assert tables(empty_dsn) == set()
     bad.write_text("CREATE TABLE t2 (id int);")
-    assert await run(empty_dsn, schema_copy) == [1, 2]
+    assert await run(empty_dsn, schema_copy) == SHIPPED + [901]
 
 
 @pytest.mark.parametrize("name", ["1_short.sql", "002.sql", "notes.txt"])
@@ -88,7 +91,7 @@ async def test_bad_file_name_is_refused(empty_dsn, schema_copy, name):
 
 async def test_dotfiles_are_ignored(empty_dsn, schema_copy):
     (schema_copy / ".DS_Store").write_bytes(b"\0")
-    assert await run(empty_dsn, schema_copy) == [1]
+    assert await run(empty_dsn, schema_copy) == SHIPPED
 
 
 async def test_duplicate_number_is_refused(empty_dsn, schema_copy):
@@ -106,15 +109,15 @@ async def test_edited_applied_migration_is_refused(empty_dsn, schema_copy):
 
 
 async def test_migration_older_than_applied_is_refused(empty_dsn, schema_copy):
-    (schema_copy / "003_c.sql").write_text("SELECT 1;")
+    (schema_copy / "902_c.sql").write_text("SELECT 1;")
     await run(empty_dsn, schema_copy)
-    (schema_copy / "002_b.sql").write_text("SELECT 1;")
+    (schema_copy / "901_b.sql").write_text("SELECT 1;")
     with pytest.raises(db.MigrationError, match="older than applied"):
         await run(empty_dsn, schema_copy)
 
 
 async def test_database_newer_than_code_is_refused(empty_dsn, schema_copy):
-    (schema_copy / "002_b.sql").write_text("SELECT 1;")
+    (schema_copy / "901_b.sql").write_text("SELECT 1;")
     await run(empty_dsn, schema_copy)
     with pytest.raises(db.MigrationError, match="lacks"):
         await run(empty_dsn)
@@ -124,10 +127,10 @@ async def test_failure_on_migrated_database_keeps_data(empty_dsn, schema_copy):
     await run(empty_dsn, schema_copy)
     with psycopg.connect(empty_dsn) as conn:
         conn.execute("INSERT INTO settings (key, value) VALUES ('retention_days', '30')")
-    (schema_copy / "002_bad.sql").write_text("CREATE TABLE t2 (id int); SELECT no_such_function();")
+    (schema_copy / "901_bad.sql").write_text("CREATE TABLE t2 (id int); SELECT no_such_function();")
     with pytest.raises(psycopg.errors.UndefinedFunction):
         await run(empty_dsn, schema_copy)
-    assert versions(empty_dsn) == [1]
+    assert versions(empty_dsn) == SHIPPED
     assert "t2" not in tables(empty_dsn)
     with psycopg.connect(empty_dsn) as conn:
         assert conn.execute("SELECT value FROM settings WHERE key = 'retention_days'").fetchone() == (30,)
