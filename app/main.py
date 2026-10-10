@@ -1,17 +1,19 @@
 """The Python API and gateway. Serves /healthz and, in later steps, /api/*."""
 
+import asyncio
 import contextlib
 import json
 import logging
 import os
 import sys
+from datetime import UTC, datetime
 
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from app import db
+from app import db, records
 
 log = logging.getLogger("app")
 
@@ -42,7 +44,9 @@ async def healthz(request: Request) -> JSONResponse:
     return JSONResponse({"status": "down", "db": "down"}, status_code=503)
 
 
-def create_app(dsn: str) -> Starlette:
+def create_app(dsn: str, clock=lambda: datetime.now(UTC)) -> Starlette:
+    """clock lets tests stand in for time."""
+
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):
         pool = await db.open_pool(dsn)
@@ -51,7 +55,13 @@ def create_app(dsn: str) -> Starlette:
             if applied:
                 log.info("applied migrations %s", applied)
             app.state.pool = pool
-            yield
+            retention = asyncio.create_task(records.retention_loop(pool, clock))
+            try:
+                yield
+            finally:
+                retention.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await retention
         finally:
             await pool.close()
 

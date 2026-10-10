@@ -72,6 +72,8 @@ Dockerfile                app image (Python API)
 .dockerignore             allowlist: only pyproject.toml, uv.lock and app/ reach the app image
 pyproject.toml            pinned Python dependencies, with uv.lock
 scripts/init-env.sh       writes .env with generated database credentials, once
+scripts/backup.sh         pg_dump of the database to a file
+scripts/restore.sh        replaces the database with a backup, in one transaction
 app/
   main.py                 routes and startup (create_app, and from_env for uvicorn --factory)
   db.py                   Postgres connection pool, migrations, queries
@@ -81,7 +83,7 @@ app/
   guard.py                Qwen3Guard call, verdict parsing
   workers.py              registry, heartbeat, routing
   live.py                 LISTEN/NOTIFY fan-out to SSE clients
-  admin.py                backup, restore (pg_dump, pg_restore), retention, export, audit
+  records.py              retention, export and delete one student
 web/
   Dockerfile              web image, Next.js standalone output on Node
   package.json            pinned Next.js, React and test tools, with lockfile
@@ -225,9 +227,9 @@ Schema notes from `001_init.sql`:
 - `auth_sessions` stores the sha256 of the cookie token, never the token, with exactly one of `staff_id` and `student_id` set and an `expires_at`.
 - Deleting a student cascades to their conversations, messages, flags and cookie sessions, and deleting a lesson session cascades to its students, so retention and delete-one-student are single deletes. `messages.worker_id` and `conversations.model` are plain text, so removing a worker or a model never touches transcripts. Deleting a staff account keeps audit rows (the username is copied into each) and flag reviews (`reviewed_by` becomes empty).
 
-Retention: an hourly task deletes conversations, messages and flags older than the retention setting, plus closed lesson sessions with no remaining messages (R7.2).
+Retention (R7.2), `app/records.py`: the app runs it at startup and then hourly, in one transaction under an advisory lock. The period is `settings.retention_days`, 30 when unset; a stored value that is not a whole number from 1 to 3650 is logged as an error and 30 is used. With cutoff = now minus the period, it deletes messages created before the cutoff (their flags go with them), then conversations started before the cutoff that have no messages left, then closed lesson sessions closed before the cutoff with no message in any of their conversations (their students and cookie sessions go with them). Open and paused sessions are never deleted. It logs counts only. A failed run is logged and the next one comes an hour later.
 
-Backup: `docker compose exec db pg_dump -Fc` writes a custom-format dump while the app keeps running. Restore stops the app, empties the database, runs `pg_restore` into it, and starts the app again. The admin page download runs the same dump. Model weights are not in the backup; they download again.
+Backup: `scripts/backup.sh [file]` runs `docker compose exec db pg_dump -Fc` while the app keeps running and writes the dump readable by its owner only, renaming it into place only once `pg_dump` has succeeded. Restore: `scripts/restore.sh [--yes] <file>` first checks the file with `pg_restore --list` (a file that is not a dump changes nothing), asks for confirmation, stops the app, then inside the db container unpacks the dump to SQL and runs `DROP SCHEMA public CASCADE`, `CREATE SCHEMA public` and that SQL with `psql --single-transaction`, so a failure leaves the database as it was. It starts the app again either way; startup migrations bring an older dump up to date. The admin page download runs the same dump. Model weights are not in the backup; they download again.
 
 Export one student (R7.3): JSON of their conversations, messages and flags. Delete one student removes all of those rows. Both go in the audit log.
 
