@@ -3,6 +3,7 @@
 import { signOut, useStaff } from "@/lib/session";
 import styles from "@/app/forms.module.css";
 import { ServerDown } from "@/app/server-down";
+import Models from "@/components/Models";
 
 export default function TeachPage() {
   const state = useStaff("teacher");
@@ -14,6 +15,7 @@ export default function TeachPage() {
       <p>
         Signed in as {state.staff.username}. <button onClick={signOut}>Sign out</button>
       </p>
+      <Models />
     </main>
   );
 }

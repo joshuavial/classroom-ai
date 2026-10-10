@@ -561,3 +561,122 @@ async def test_model_list_and_toggle(env):
             {"name": "gemma-4-e2b-it", "enabled": False, "offered": False}]
         env.clock.now = T0 + timedelta(seconds=45)
         assert [m["offered"] for m in await workers.model_list(conn, env.clock())] == [False, False, False]
+
+
+# Staff endpoints
+
+from tests.test_auth import csrf, password_hash, sign_in  # noqa: E402,F401
+
+
+@pytest.fixture
+async def staff_client(env, password_hash):  # noqa: F811
+    """Returns a function giving an https client signed in as a new staff member."""
+    clients = []
+
+    async def make(role=None):
+        c = httpx.AsyncClient(transport=httpx.ASGITransport(app=env.app), base_url="https://test")
+        clients.append(c)
+        if role:
+            name = f"{role}-{uuid.uuid4().hex[:6]}"
+            await env.sql("INSERT INTO staff (username, password_hash, role) VALUES (%s, %s, %s)",
+                          (name, password_hash, role))
+            await sign_in(c, name)
+            c.username = name
+        return c
+
+    yield make
+    for c in clients:
+        await c.aclose()
+
+
+async def audit(env):
+    return await env.sql("SELECT username, action, detail FROM audit ORDER BY id")
+
+
+ADMIN_ONLY = [("GET", "/api/workers"), ("GET", "/api/workers/join"), ("POST", "/api/workers/rotate"),
+              ("POST", "/api/workers/6f1c3a9e-2b7d-4a52-9e4f-0d1b2c3e4f50/remove")]
+TEACHER = [("GET", "/api/models"), ("PUT", "/api/models/gemma-4-e2b-it")]
+
+
+@pytest.mark.parametrize("method,path", ADMIN_ONLY + TEACHER)
+async def test_signed_out_refused(env, staff_client, method, path):
+    c = await staff_client()
+    r = await c.request(method, path, json={}, headers=await csrf(c))
+    assert r.status_code == 401
+
+
+@pytest.mark.parametrize("method,path", ADMIN_ONLY)
+async def test_teacher_refused_admin_endpoints(env, staff_client, method, path):
+    c = await staff_client("teacher")
+    r = await c.request(method, path, json={"rotate": False}, headers=await csrf(c))
+    assert (r.status_code, r.json()) == (403, {"error": "forbidden"})
+    assert await audit(env) == []
+
+
+@pytest.mark.parametrize("method,path", [m for m in ADMIN_ONLY + TEACHER if m[0] != "GET"])
+async def test_changes_need_the_csrf_header(env, staff_client, method, path):
+    c = await staff_client("admin")
+    r = await c.request(method, path, json={"enabled": True, "rotate": False})
+    assert r.status_code == 403
+    assert await audit(env) == []
+
+
+async def test_admin_sees_workers_without_keys(env, staff_client):
+    worker_id, key = await env.join()
+    c = await staff_client("admin")
+    r = await c.get("/api/workers")
+    assert r.status_code == 200
+    (w,) = r.json()["workers"]
+    assert (w["id"], w["status"]) == (worker_id, "up")
+    assert key not in r.text
+
+
+async def test_join_info(env, staff_client):
+    c = await staff_client("admin")
+    token = await env.token()
+    r = await c.get("/api/workers/join", headers={"host": "classroom.lan"})
+    assert r.headers["cache-control"] == "no-store"
+    assert r.json()["bash"] == (f"SERVER_URL=https://classroom.lan JOIN_TOKEN={token} "
+                                "docker compose -f worker/compose.yml up -d --build")
+    r = await c.get("/api/workers/join", headers={"host": "localhost"})
+    assert "SERVER_URL=https://host.docker.internal" in r.json()["bash"]
+    assert "WORKER_URL=http://host.docker.internal:8081" in r.json()["bash"]
+
+
+async def test_remove_and_rotate_through_the_api(env, staff_client):
+    worker_id, key = await env.join("10.0.0.5")
+    other, _ = await env.join("10.0.0.6")
+    c = await staff_client("admin")
+    r = await c.post(f"/api/workers/{worker_id}/remove", json={"rotate": False}, headers=await csrf(c))
+    assert r.status_code == 200
+    assert (await env.worker(worker_id)).removed and await env.live(other)
+    assert (await env.beat(worker_id, key)).status_code == 403
+    old = await env.token()
+    r = await c.post("/api/workers/rotate", headers=await csrf(c))
+    assert r.status_code == 200 and await env.token() != old and not await env.live(other)
+    r = await c.post(f"/api/workers/{other}/remove", json={"rotate": True}, headers=await csrf(c))
+    assert r.status_code == 200
+    assert (await c.post(f"/api/workers/{uuid.uuid4()}/remove", json={}, headers=await csrf(c))).status_code == 404
+    assert (await c.post(f"/api/workers/{other}/remove", json={"rotate": "yes"},
+                         headers=await csrf(c))).status_code == 400
+    assert [(a, d) for _, a, d in await audit(env)] == [
+        ("worker.remove", {"worker_id": worker_id, "rotated_join_token": False}),
+        ("workers.rotate_join_token", {}),
+        ("worker.remove", {"worker_id": other, "rotated_join_token": True}),
+    ]
+    assert {u for u, _, _ in await audit(env)} == {c.username}
+
+
+@pytest.mark.parametrize("role", ["teacher", "admin"])
+async def test_staff_toggle_models(env, staff_client, role):
+    await env.join()
+    c = await staff_client(role)
+    assert (await c.get("/api/models")).json() == {
+        "models": [{"name": "gemma-4-e2b-it", "enabled": False, "offered": True}]}
+    r = await c.put("/api/models/gemma-4-e2b-it", json={"enabled": True}, headers=await csrf(c))
+    assert r.json() == {"name": "gemma-4-e2b-it", "enabled": True}
+    assert (await c.get("/api/models")).json()["models"][0]["enabled"] is True
+    assert (await c.put("/api/models/nope", json={"enabled": True}, headers=await csrf(c))).status_code == 404
+    assert (await c.put("/api/models/gemma-4-e2b-it", json={"enabled": "on"},
+                        headers=await csrf(c))).status_code == 400
+    assert await audit(env) == [(c.username, "model.enable", {"model": "gemma-4-e2b-it"})]

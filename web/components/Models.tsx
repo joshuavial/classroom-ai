@@ -5,6 +5,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import { onAuthError } from "@/lib/session";
 
 export type Model = { name: string; enabled: boolean; offered: boolean };
 
@@ -16,7 +17,8 @@ export default function Models() {
     try {
       setModels((await api<{ models: Model[] }>("/models")).models);
       setError("");
-    } catch {
+    } catch (e) {
+      onAuthError(e);
       setError("Could not load the models.");
     }
   }, []);
@@ -29,7 +31,8 @@ export default function Models() {
     let failed = false;
     try {
       await api(`/models/${encodeURIComponent(model.name)}`, { method: "PUT", body: { enabled: !model.enabled } });
-    } catch {
+    } catch (e) {
+      onAuthError(e);
       failed = true;
     }
     await load();

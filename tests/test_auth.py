@@ -333,9 +333,9 @@ async def test_login_issues_a_new_session_token(client, make_staff):
 
 
 async def test_heartbeat_path_is_exempt_from_cookie_csrf(client):
-    # No route yet (step 2); the point is the middleware lets it through.
+    # The middleware lets it through; the join token check refuses it.
     response = await client.post("/api/workers/heartbeat", json={})
-    assert response.status_code == 404
+    assert (response.status_code, response.json()) == (401, {"error": "unauthorised"})
 
 
 async def test_database_down_is_503(dsn):
