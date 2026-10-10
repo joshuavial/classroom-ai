@@ -6,7 +6,7 @@ import itertools
 import psycopg
 import pytest
 
-from app import classes
+from app import auth, classes
 from tests.helpers import make_staff, new_client, post, sign_in
 
 
@@ -213,6 +213,37 @@ async def test_join_rate_limit(app, teacher):
         statuses = [(await post(guesser, "/api/join", {"code": f"{i:06d}", "name": "x"})).status_code
                     for i in range(31)]
     assert statuses[:30].count(429) == 0 and statuses[30] == 429
+
+
+async def test_a_class_behind_one_address_all_joins(app, teacher):
+    """Successful joins do not use up the limit, so 40 students sharing one
+    NAT address all get in within the minute."""
+    _, roster = await new_lesson(teacher, 40)
+    for i, entry in enumerate(roster):
+        _, r = await join(app, entry["code"], f"Student {i}")
+        assert r.status_code == 200, i
+
+
+async def test_wrong_codes_still_use_up_the_limit(app, teacher):
+    _, roster = await new_lesson(teacher, 1)
+    taken = {r["code"] for r in roster}
+    wrong = [c for c in (f"{i:06d}" for i in range(100)) if c not in taken][:30]
+    async with new_client(app) as guesser:
+        for code in wrong:
+            assert (await post(guesser, "/api/join", {"code": code, "name": "x"})).status_code == 404
+        r = await post(guesser, "/api/join", {"code": roster[0]["code"], "name": "x"})
+    assert (r.status_code, r.json()) == (429, {"error": "too_many_attempts"})
+
+
+def test_limiter_forgive_drops_the_newest_attempt():
+    now = [0.0]
+    limiter = auth.RateLimiter(limit=2, window=60, clock=lambda: now[0])
+    assert limiter.allow("a") and limiter.allow("a") and not limiter.allow("a")
+    limiter.forgive("a")
+    assert limiter.allow("a") and not limiter.allow("a")
+    limiter.forgive("nobody")  # no attempts: nothing to drop
+    now[0] = 61
+    assert limiter.allow("a")
 
 
 async def test_closing_invalidates_codes_and_cookies(app, teacher, dsn):

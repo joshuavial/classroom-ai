@@ -69,7 +69,12 @@ async def find_by_code(conn, code: str) -> list[tuple]:
 
 
 async def join(request: Request) -> JSONResponse:
-    if not request.app.state.join_limiter.allow(client_ip(request)):
+    # Every attempt counts when admitted, so a burst cannot get past the limit,
+    # and a successful join is forgiven at the end: only wrong codes use up
+    # the limit, so a class behind one address is not refused.
+    ip = client_ip(request)
+    limiter = request.app.state.join_limiter
+    if not limiter.allow(ip):
         raise HTTPError(429, "too_many_attempts")
     body = await json_body(request)
     code = body.get("code")
@@ -100,6 +105,7 @@ async def join(request: Request) -> JSONResponse:
             student["name"] = name
         response = JSONResponse(public(student))
         await start_session(conn, request, response, student_id=student["id"])
+    limiter.forgive(ip)
     return response
 
 

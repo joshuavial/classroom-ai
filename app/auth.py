@@ -133,6 +133,13 @@ class RateLimiter:
         q.append(now)
         return True
 
+    def forgive(self, key: str) -> None:
+        """Drop this key's newest attempt: for limits on failures, the caller
+        counts every attempt when admitted and forgives the ones that succeed."""
+        q = self.hits.get(key)
+        if q:
+            q.pop()
+
     def reset(self) -> None:
         self.hits.clear()
 
