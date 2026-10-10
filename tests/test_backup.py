@@ -105,7 +105,7 @@ async def populate(dsn):
 def wipe(dsn):
     with psycopg.connect(dsn, autocommit=True) as conn:
         conn.execute("DROP SCHEMA public CASCADE")
-        conn.execute("CREATE SCHEMA public")
+        conn.execute("CREATE SCHEMA public AUTHORIZATION pg_database_owner")
 
 
 async def test_backup_wipe_restore_returns_everything(stack, empty_dsn, tmp_path):
@@ -201,3 +201,33 @@ def test_failed_backup_leaves_no_file(stack, tmp_path, monkeypatch):
     r = stack("backup.sh", "out.dump")
     assert r.returncode != 0
     assert list(tmp_path.glob("out.dump*")) == []
+
+
+async def test_restore_twice_in_a_row(stack, empty_dsn):
+    """A backup taken after a restore restores too."""
+    await populate(empty_dsn)
+    assert stack("backup.sh", "first.dump").returncode == 0
+    r = stack("restore.sh", "--yes", "first.dump")
+    assert r.returncode == 0, r.stderr
+    before = snapshot(empty_dsn)
+    assert stack("backup.sh", "second.dump").returncode == 0
+    r = stack("restore.sh", "--yes", "second.dump")
+    assert r.returncode == 0, r.stderr
+    assert snapshot(empty_dsn) == before
+    with psycopg.connect(empty_dsn) as conn:
+        owner = conn.execute("SELECT nspowner::regrole::text FROM pg_namespace WHERE nspname = 'public'").fetchone()
+        assert owner == ("pg_database_owner",)
+        # Identity counters came back: a new row gets a fresh id.
+        conn.execute("INSERT INTO audit (username, action) VALUES ('x', 'y')")
+
+
+async def test_restore_a_backup_whose_schema_had_another_owner(stack, empty_dsn):
+    """pg_dump writes CREATE SCHEMA public when its owner is not the default."""
+    await populate(empty_dsn)
+    with psycopg.connect(empty_dsn) as conn:
+        conn.execute("ALTER SCHEMA public OWNER TO postgres")
+    assert stack("backup.sh", "out.dump").returncode == 0
+    before = snapshot(empty_dsn)
+    r = stack("restore.sh", "--yes", "out.dump")
+    assert r.returncode == 0, r.stderr
+    assert snapshot(empty_dsn) == before
