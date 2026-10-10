@@ -174,3 +174,16 @@ test("a failed remove or rotate says so", async () => {
   await click(screen.getByRole("button", { name: "Rotate join token" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("Could not rotate the join token.");
 });
+
+test("models offered after the page opened appear on the next poll", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  let models: { name: string; enabled: boolean; offered: boolean }[] = [];
+  routes["GET /models"] = () => ({ body: { models } });
+  render(<Models />);
+  expect(await screen.findByText("No worker has offered a model yet.")).toBeInTheDocument();
+  models = [{ name: "gemma-4-e2b-it", enabled: false, offered: true }];
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+  });
+  expect(screen.getByRole("checkbox", { name: "gemma-4-e2b-it" })).not.toBeChecked();
+});

@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { onAuthError } from "@/lib/session";
+import { POLL_MS } from "@/components/Workers";
 
 export type Model = { name: string; enabled: boolean; offered: boolean };
 
@@ -23,8 +24,11 @@ export default function Models() {
     }
   }, []);
 
+  // Polled, so a model a worker starts offering shows up without a reload.
   useEffect(() => {
     load();
+    const timer = setInterval(load, POLL_MS);
+    return () => clearInterval(timer);
   }, [load]);
 
   async function toggle(model: Model) {
