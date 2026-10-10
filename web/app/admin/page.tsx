@@ -5,6 +5,7 @@ import { ApiError, api } from "@/lib/api";
 import { type Role, onAuthError, signOut, useStaff } from "@/lib/session";
 import styles from "@/app/forms.module.css";
 import { ServerDown } from "@/app/server-down";
+import Records from "@/components/Records";
 
 type StaffRow = { username: string; role: Role; created_at: string };
 
@@ -115,6 +116,7 @@ export default function AdminPage() {
         Signed in as {state.staff.username}. <button onClick={signOut}>Sign out</button>
       </p>
       <StaffAccounts />
+      <Records />
     </main>
   );
 }
