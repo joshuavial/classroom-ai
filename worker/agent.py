@@ -189,7 +189,9 @@ def create_app(
             request.method,
             f"{config.backend_url}{request.url.path}",
             params=request.query_params,
-            headers={k: v for k, v in request.headers.items() if k in REQUEST_HEADERS},
+            # identity: the reply is passed on byte for byte, so it must not be compressed.
+            headers={**{k: v for k, v in request.headers.items() if k in REQUEST_HEADERS},
+                     "accept-encoding": "identity"},
             content=request.stream() if request.method == "POST" else None,
         )
         try:
@@ -252,7 +254,10 @@ def from_env() -> Starlette:
     missing = [k for k in ("SERVER_URL", "JOIN_TOKEN", "BACKEND_URL") if not env.get(k)]
     if missing:
         raise SystemExit(f"missing environment variables: {', '.join(missing)}")
-    max_concurrent = int(env.get("MAX_CONCURRENT") or 4)
+    try:
+        max_concurrent = int(env.get("MAX_CONCURRENT") or 4)
+    except ValueError:
+        raise SystemExit("MAX_CONCURRENT must be a whole number") from None
     if not 1 <= max_concurrent <= 64:
         raise SystemExit("MAX_CONCURRENT must be between 1 and 64")
     ca = env.get("SERVER_CA", "/etc/classroom-ai/server-ca.crt")

@@ -1,5 +1,5 @@
 # The worker agent. The admin page's join command sets SERVER_URL and
-# JOIN_TOKEN and runs: docker compose -f worker/compose.yml up -d
+# JOIN_TOKEN and runs: docker compose -f worker/compose.yml up -d --build
 # BACKEND_URL defaults to a model server on this machine (Ollama's port).
 # With a llama-server recipe, add -f worker/recipes/compose.yml; see recipes/README.md.
 services:

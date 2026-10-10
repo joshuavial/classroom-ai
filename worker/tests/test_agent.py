@@ -107,6 +107,17 @@ async def test_models_forwarded_without_worker_key():
     assert seen == {"auth": None, "url": "http://backend/v1/models"}
 
 
+async def test_backend_is_asked_for_uncompressed_replies():
+    seen = {}
+
+    def handler(request):
+        seen["enc"] = request.headers.get("accept-encoding")
+        return json_stream(200, MODELS)
+
+    await run(make_app(handler), "GET", "/v1/models", {**AUTH, "accept-encoding": "gzip"})
+    assert seen["enc"] == "identity"
+
+
 async def test_chat_streams_first_chunk_before_backend_finishes():
     release = asyncio.Event()
     closed = asyncio.Event()
@@ -339,6 +350,9 @@ def test_from_env_requires_settings(monkeypatch, tmp_path):
     monkeypatch.setenv("JOIN_TOKEN", "j")
     monkeypatch.setenv("BACKEND_URL", "http://b")
     monkeypatch.setenv("IDENTITY_PATH", str(tmp_path / "id.json"))
+    monkeypatch.setenv("MAX_CONCURRENT", "four")
+    with pytest.raises(SystemExit):
+        agent.from_env()
     monkeypatch.setenv("MAX_CONCURRENT", "0")
     with pytest.raises(SystemExit):
         agent.from_env()

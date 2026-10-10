@@ -122,9 +122,7 @@ export default function Workers() {
               <th scope="col">Status</th>
               <th scope="col">Models</th>
               <th scope="col">Busy</th>
-              <th scope="col">
-                <span className="visually-hidden">Actions</span>
-              </th>
+              <th scope="col" aria-label="Actions" />
             </tr>
           </thead>
           <tbody>

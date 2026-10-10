@@ -22,6 +22,7 @@ Then open `https://classroom.school.lan` from another machine on the network, an
 - [Install](docs/install.md): server install, Windows with WSL2, HTTPS and trusting the certificate, start on boot, upgrade.
 - [Vision](docs/vision.md): why this exists, who it is for and the principles behind it.
 - [PRD 00: Lab pilot](docs/prd-00-lab-pilot.md): the first increment, one class piloting it for one lesson.
+- [Worker recipes](worker/recipes/README.md): model servers for a GPU machine, and keeping students off it.
 - [Architecture](docs/architecture.md) and [decision records](docs/adr/README.md): how it will be built.
 - [Implementation plan](docs/implementation-plan.md): the ordered build steps for the lab pilot.
 - [Research](docs/research/summary.md): the evidence behind these choices.

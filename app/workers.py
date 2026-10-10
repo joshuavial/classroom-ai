@@ -272,8 +272,9 @@ async def record_heartbeat(pool, request: Request, now: datetime, client: httpx.
             raise HeartbeatError(403, "worker removed or joined with another key")
         # New models start disabled; a known model keeps its setting.
         await conn.execute(
-            "INSERT INTO models (name, first_seen) SELECT unnest(%s::text[]), %s ON CONFLICT DO NOTHING",
-            (beat.models, now),
+            "INSERT INTO models (name, first_seen) SELECT m, %s FROM unnest(%s::text[]) AS m ORDER BY m"
+            " ON CONFLICT DO NOTHING",
+            (now, beat.models),
         )
 
 
