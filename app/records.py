@@ -130,6 +130,7 @@ async def partly_locked(conn, group_ids: set[int], rows_sql: str, lock_of: str) 
     if not group_ids:
         return set()
     ids = list(group_ids)
+    # rows_sql and lock_of are constants in this module, never request input.
     cur = await conn.execute(f"{rows_sql} ORDER BY 2 FOR UPDATE OF {lock_of} SKIP LOCKED", (ids,))
     locked = {row[1] for row in await cur.fetchall()}
     cur = await conn.execute(rows_sql, (ids,))
