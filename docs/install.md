@@ -2,7 +2,7 @@
 
 How to install the classroom-ai server on a school network, keep it running, trust its certificate on each device, and upgrade it. The choices behind these steps are in [architecture.md](architecture.md), [ADR-0003](adr/0003-docker-engine-in-wsl2.md) and [research/container-runtime.md](research/container-runtime.md).
 
-Steps marked **untested** have been put together from the cited documentation and have not been run yet. They are checked on the Windows test machine in step 9 of the [implementation plan](implementation-plan.md). Nothing in [Windows: Docker Engine in WSL2](#windows-docker-engine-in-wsl2) or [Start on boot](#start-on-boot) has been run, and no device has had the certificate trusted yet. What has been run, on a Mac with Docker: `init-env.sh` with and without a server name, `docker compose up -d --build` in both modes, HTTPS for an IP address and for a DNS name with the root certificate trusted (and refused without it), the redirect from port 80, fetching the root certificate with `docker compose cp`, and the upgrade below keeping data.
+Steps marked **untested** have been put together from the cited documentation and have not been run yet. They are checked on the Windows test machine in step 9 of the [implementation plan](implementation-plan.md). Nothing in [Windows: Docker Engine in WSL2](#windows-docker-engine-in-wsl2) or [Start on boot](#start-on-boot) has been run, and no device has had the certificate trusted yet. What has been run, on a Mac with Docker: `init-env.sh` with and without a server name, `docker compose up -d --build` in both modes, HTTPS for an IP address and for a DNS name with the root certificate trusted (and refused without it), the redirect from port 80, fetching the root certificate with `docker compose cp`, and the upgrade below keeping data. The HTTPS checks published Caddy on other host ports (`HTTP_PORT`, `HTTPS_PORT`), because that Mac's port 443 is taken by another program. Changing `SERVER_NAME` on a running server has not been run.
 
 ## What you need
 
@@ -37,7 +37,7 @@ Students must use exactly the name in `SERVER_NAME`. The certificate covers only
 
 ### Development on a Mac
 
-`./scripts/init-env.sh` with no server name leaves `SERVER_NAME` unset: Caddy serves plain HTTP on `http://localhost`, and compose publishes only port 80, on 127.0.0.1. If a port is already taken, set `HTTP_PORT` (and, with HTTPS, `HTTPS_PORT`) in `.env` to use another host port.
+`./scripts/init-env.sh` with no server name leaves `SERVER_NAME` unset: Caddy serves plain HTTP on `http://localhost`, and compose publishes only port 80, on 127.0.0.1. If a port is already taken, set `HTTP_PORT` (and, with HTTPS, `HTTPS_PORT`) in `.env` to use another host port. These are for development or a second stack on one machine: Caddy's redirect from HTTP still sends browsers to port 443.
 
 ## HTTPS
 

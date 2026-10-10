@@ -18,6 +18,8 @@ $trigger = New-ScheduledTaskTrigger -AtStartup
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+# Some Windows builds ignore the zero above and keep the three-day default.
+$settings.ExecutionTimeLimit = "PT0S"
 # Giving the password makes it "run whether the user is signed in or not".
 Register-ScheduledTask -TaskName "classroom-ai WSL" -Action $action -Trigger $trigger `
     -Settings $settings -User $User -Password $credential.GetNetworkCredential().Password `
