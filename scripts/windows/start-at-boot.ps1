@@ -2,8 +2,8 @@
 # running, so Docker inside Ubuntu brings the stack back with nobody signed in.
 # Not yet run on a Windows machine. Check on the Windows test machine.
 #
-# In an administrator PowerShell:
-#   .\scripts\windows\start-at-boot.ps1 -User classroomai -Distro Ubuntu-24.04
+# Copy this file to the Windows disk, then in an administrator PowerShell:
+#   powershell -ExecutionPolicy Bypass -File .\start-at-boot.ps1 -User classroomai -Distro Ubuntu-24.04
 param(
     [Parameter(Mandatory = $true)][string]$User,
     [string]$Distro = "Ubuntu-24.04"
