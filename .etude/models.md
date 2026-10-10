@@ -66,4 +66,6 @@ Fable runs only on the account that has Fable quota. On a credit error ai-route 
 
 ## Validation
 
-Not yet run. Before a profile delivers its first change, smoke each seat above with a one-line prompt from the repo root and confirm usable output and the model in `tasks.jsonl`. Record the date and result here.
+Before a profile delivers its first change, smoke each seat above with a one-line prompt from the repo root and confirm usable output and the model in `tasks.jsonl`. Record the date and result here.
+
+- 2026-10-10, dev-claude lane: Fable (`claude-fable-5-1`), Astra (`gpt-6-astra`) and Sol (`gpt-5.6-sol`) each returned the requested one-line reply, and `tasks.jsonl` logged those models. Sonnet not yet smoked.

@@ -1,0 +1,54 @@
+# The server stack. Run scripts/init-env.sh once first to create .env.
+services:
+  caddy:
+    image: caddy:2.11.7@sha256:f2a1290d0463aad60660d4ec134943f183ee2a5f6c3eb7bf32dd984f2f020772
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:80:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    networks: [edge]
+    depends_on: [app, web]
+
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?run scripts/init-env.sh first}
+    networks: [edge, internal]
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    build: web
+    restart: unless-stopped
+    networks: [edge]
+
+  db:
+    image: postgres:18.6@sha256:74935e72241653ca55e0414067e6d8763aceb8a810eb51b452253ec3dcfc4336
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?run scripts/init-env.sh first}
+      POSTGRES_DB: ${POSTGRES_DB:?run scripts/init-env.sh first}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run scripts/init-env.sh first}
+    volumes:
+      - pgdata:/var/lib/postgresql
+    networks: [internal]
+    healthcheck:
+      # TCP on 127.0.0.1 only answers once the real server is up, not the
+      # temporary one the image runs during first-time init.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+networks:
+  edge: {}
+  internal:
+    internal: true
+
+volumes:
+  pgdata: {}
+  caddy_data: {}

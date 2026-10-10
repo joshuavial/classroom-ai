@@ -10,7 +10,17 @@ Every change updates `docs/architecture.md` or the relevant doc in `docs/`, or r
 
 ## Build and test
 
-No code yet. Step 0 of [docs/implementation-plan.md](docs/implementation-plan.md) scaffolds the Python 3.14 Starlette app (pytest against a disposable Postgres in Docker), the Next.js app in `web/` (Vitest, later Playwright) and `compose.yml`, and must replace this paragraph with the exact commands.
+Prerequisites: Docker (any Docker-compatible runtime on the Mac), uv, Node.js 24. Nothing is installed globally.
+
+```bash
+uv sync                          # Python 3.14 venv with app and test dependencies
+uv run pytest                    # app tests; starts one postgres:18.6 container for the session
+(cd web && npm ci && npm test)   # web tests (Vitest); `npm run typecheck` for tsc
+./scripts/init-env.sh            # once: writes .env with generated database credentials
+docker compose up -d --build     # server stack on http://localhost (bound to 127.0.0.1 only)
+curl localhost/healthz           # {"status":"ok","db":"ok"}
+docker compose down              # add -v to drop the database volume too
+```
 
 This project uses **bd** (beads) for issue tracking. Run `bd prime` for full workflow context.
 

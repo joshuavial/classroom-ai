@@ -18,6 +18,8 @@ Excludes: any feature.
 
 Checks: `pytest` and `npm test` in `web/` green. `docker compose up` then `curl localhost/healthz` returns ok and `curl localhost/` returns the web page. A migration test applies the schema to an empty database and to an already-migrated one.
 
+Delivered 2026-10-10: everything listed above. Commands are in AGENTS.md "Build and test".
+
 ## 1. Staff accounts (parallel with 2)
 
 Outcome: the tech teacher creates the admin account with the setup code and signs in. The admin creates a teacher account.

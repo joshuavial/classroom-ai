@@ -59,7 +59,7 @@ Two compose files, one per machine role. Both build from this repository, so ins
 
 Versions at time of writing: Python 3.14.8, Starlette 1.7.0, uvicorn 0.54.0, httpx 0.28.1, psycopg 3.3.6, psycopg-pool 3.3.3, PostgreSQL 18.6, Caddy 2.11.7, llama.cpp build b11433 (recipe and guard), Node.js 24.21.0, Next.js 16.4.0, React 19.3.0, TypeScript 7.0.2, Vitest 5.0.3, Playwright 1.63.0. Node.js 26 enters LTS on 2026-10-28; move to it in a release after that. Pinned versions go in `pyproject.toml`, `web/package.json` with its lockfile, `compose.yml` (images pinned by tag and digest) and the worker recipes. Upgrading means changing those pins in a release.
 
-Five runtime Python dependencies: starlette, uvicorn, httpx, psycopg, psycopg-pool. Tests add pytest and pytest-asyncio.
+Five runtime Python dependencies: starlette, uvicorn, httpx, psycopg (with its binary wheel, which bundles libpq) and psycopg-pool. Tests add pytest 9.1.1 and pytest-asyncio 1.4.0. `uv` (0.12.13 in the app image) installs them from `uv.lock`.
 
 Three runtime Node dependencies for `web`: next, react, react-dom. Development adds TypeScript, Vitest, Testing Library and Playwright.
 
@@ -69,9 +69,11 @@ Three runtime Node dependencies for `web`: next, react, react-dom. Development a
 compose.yml               server stack
 Caddyfile
 Dockerfile                app image (Python API)
-pyproject.toml
+.dockerignore             allowlist: only pyproject.toml, uv.lock and app/ reach the app image
+pyproject.toml            pinned Python dependencies, with uv.lock
+scripts/init-env.sh       writes .env with generated database credentials, once
 app/
-  main.py                 routes and startup
+  main.py                 routes and startup (create_app, and from_env for uvicorn --factory)
   db.py                   Postgres connection pool, migrations, queries
   schema/001_init.sql     numbered SQL migrations, recorded in schema_migrations
   auth.py                 staff login, student join, sessions, roles
@@ -89,6 +91,7 @@ web/
   app/teach/slips/page.tsx  /teach/slips printable code slips
   app/admin/page.tsx      /admin tech teacher
   lib/api.ts              JSON API calls with the CSRF header
+  vitest.config.mts       Vitest with jsdom
   tests/                  Vitest and Testing Library component and page tests
   e2e/                    Playwright smoke against the compose stack
 worker/
@@ -97,6 +100,8 @@ worker/
   compose.yml             agent only, pointed at an existing model server
   recipes/                llama-server compose (nvidia, cpu), Ollama notes
 tests/
+  conftest.py             test Postgres container, disposable database, ASGI client
+  fakes.py                fake worker and fake guard (small Starlette apps)
 docs/
 LICENSES.md               every component and default model with its licence
 ```
@@ -179,7 +184,7 @@ Students (D1):
 - Opening and closing: a session is `open`, `paused` or `closed`. Pause keeps students signed in but stops sending (R4.6). Close ends the session, all its codes stop working and student cookies expire. A closed session's transcripts stay readable by the teacher.
 - A student record lasts one session. "Past conversations in this class" (R4.4) means past conversations in this session. Linking a student across lessons needs accounts, which are a later increment.
 
-Cookies: random 32-byte tokens stored in a `auth_sessions` table, `HttpOnly`, `Secure`, `SameSite=Lax`. Every state-changing request needs the cookie and a matching CSRF header from the page.
+Cookies: random 32-byte tokens, stored in the `auth_sessions` table as their sha256 hash, `HttpOnly`, `Secure`, `SameSite=Lax`. Every state-changing request needs the cookie and a matching CSRF header from the page. `web/lib/api.ts` sends the value of the `csrf_token` cookie in the `X-CSRF-Token` header on every request other than GET and HEAD.
 
 Student codes can be guessed: 30 tries per minute per IP address on the join endpoint. With 30 codes open, one address needs around 18 hours on average to hit one. A guessed bound code shows the real student's name and code in the header, so the teacher can spot it.
 
@@ -210,9 +215,15 @@ PostgreSQL in the `db` service, data in the `pgdata` volume (ADR-0005). Credenti
 | `models` | Model name, enabled. |
 | `settings` | Key/value: category actions and messages, retention days (30), join token. |
 | `audit` | Who, what, when, for staff actions (R7.4). |
-| `schema_migrations` | Applied migration numbers and when. |
+| `schema_migrations` | Applied migration numbers, a sha256 of each file, and when. |
 
-Migrations are numbered SQL files in `app/schema/`, applied at startup and recorded in `schema_migrations`.
+Migrations are numbered SQL files in `app/schema/`, named `NNN_description.sql`, applied at startup and recorded in `schema_migrations` with a sha256 of each file. The runner (`app/db.py`) applies every pending file in one transaction under a Postgres advisory lock, so a failure applies nothing and app processes starting together apply each file once. It refuses to start if a file name does not match the pattern, two files share a number, an applied file has changed, a new file is numbered below the highest applied one, or the database records a migration the code lacks. Migration files cannot contain transaction control or statements that refuse to run in a transaction, such as `CREATE INDEX CONCURRENTLY`. Take the next free number when adding one.
+
+Schema notes from `001_init.sql`:
+
+- `students` keeps one row per code. A code is unique within a lesson session among rows that are not removed, which is what lets unbinding add a fresh row with the same code. Uniqueness across open sessions is checked when codes are generated (step 3).
+- `auth_sessions` stores the sha256 of the cookie token, never the token, with exactly one of `staff_id` and `student_id` set and an `expires_at`.
+- Deleting a student cascades to their conversations, messages, flags and cookie sessions, and deleting a lesson session cascades to its students, so retention and delete-one-student are single deletes. `messages.worker_id` and `conversations.model` are plain text, so removing a worker or a model never touches transcripts. Deleting a staff account keeps audit rows (the username is copied into each) and flag reviews (`reviewed_by` becomes empty).
 
 Retention: an hourly task deletes conversations, messages and flags older than the retention setting, plus closed lesson sessions with no remaining messages (R7.2).
 
@@ -249,7 +260,7 @@ Live view: the app publishes an event per stored message, flag, join and state c
 - Caddy publishes 443 and redirects 80. `SERVER_NAME` in `.env` sets the hostname (a local DNS name or the IP address).
 - `tls internal` creates a local CA in the `caddy_data` volume. The admin page links to download the root certificate, and `docs/install.md` shows how to trust it on Windows, macOS, iOS, Android and ChromeOS. Until a device trusts it, the browser shows a warning (PRD risk). iOS needs the profile installed and then enabled under Certificate Trust Settings. Managed Chromebooks take it through the Google Admin console. Android trust in Chrome is unverified and is a pilot check.
 - Caddy routes `/api/*`, including the SSE streams, and `/healthz` to `app`, and everything else to `web`. Both share one origin, so the session cookie and the CSRF header work unchanged. Browsers never call the app on another origin, and neither `app` nor `web` publishes a port.
-- On the Mac in development, `http://localhost` skips TLS.
+- On the Mac in development, `http://localhost` skips TLS, and `compose.yml` publishes port 80 on 127.0.0.1 only until step 9 adds TLS.
 - The guard and the database are on the internal compose network and publish no ports.
 
 ## Tests
@@ -264,7 +275,8 @@ Live view: the app publishes an event per stored message, flag, join and state c
 ## Operations
 
 - Logs: the app logs JSON lines to stdout. Docker keeps them. Chat text never goes to logs, only to the database.
-- Health: `/healthz` reports database, guard and worker counts. The admin page shows the same.
+- Health: `/healthz` reports database, guard and worker counts. The admin page shows the same. So far it reports the database: 200 `{"status":"ok","db":"ok"}`, or 503 with `"db":"down"` when the database does not answer within two seconds.
+- Telemetry: the web image sets `NEXT_TELEMETRY_DISABLED=1` for the build and at run time.
 - Upgrade: `git pull && docker compose up -d --build`, which rebuilds both the `app` and `web` images. Migrations run on start. Back up first with `pg_dump`; the docs say so.
 - Postgres major upgrades are a dump and restore into the new version, done in a release with its own instructions.
 - No telemetry leaves the server.
