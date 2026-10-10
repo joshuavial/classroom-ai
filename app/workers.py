@@ -24,6 +24,8 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
+from app import auth
+
 AGENT_PORT = 8081
 DOWN_AFTER = timedelta(seconds=45)
 MAX_HEARTBEAT_BYTES = 64 * 1024
@@ -401,4 +403,98 @@ class Router:
             self.in_flight[worker.id] -= 1
 
 
-routes = [Route("/api/workers/heartbeat", heartbeat, methods=["POST"])]
+# Staff endpoints. Admin only, except models, which teachers manage too (R3.1).
+
+SAME_HOST = {"localhost", "127.0.0.1", "::1"}
+
+
+async def json_object(request: Request) -> dict:
+    raw = await request.body()
+    if len(raw) > auth.MAX_BODY:
+        raise auth.HTTPError(413, "too_large")
+    try:
+        body = json.loads(raw or b"{}")
+    except ValueError:
+        raise auth.HTTPError(400, "bad_request") from None
+    if not isinstance(body, dict):
+        raise auth.HTTPError(400, "bad_request")
+    return body
+
+
+async def get_workers(request: Request) -> JSONResponse:
+    await auth.require_staff(request, "admin")
+    async with request.app.state.pool.connection() as conn:
+        listed = await worker_list(conn, request.app.state.clock(), request.app.state.router)
+    return JSONResponse({"workers": listed})
+
+
+async def get_join(request: Request) -> JSONResponse:
+    await auth.require_staff(request, "admin")
+    scheme = "https" if auth.is_https(request) else "http"
+    host = request.url.hostname or "localhost"
+    worker_url = None
+    if host in SAME_HOST:
+        # The admin is on the server itself; a worker there reaches the
+        # server, and the server the worker, through the Docker host.
+        host, worker_url = "host.docker.internal", f"http://host.docker.internal:{AGENT_PORT}"
+    port = f":{request.url.port}" if request.url.port else ""
+    async with request.app.state.pool.connection() as conn:
+        token = (await join_token(conn))["token"]
+    commands = join_commands(f"{scheme}://{host}{port}", token, worker_url=worker_url)
+    return JSONResponse(commands, headers={"Cache-Control": "no-store"})
+
+
+async def post_remove(request: Request) -> JSONResponse:
+    admin = await auth.require_staff(request, "admin")
+    body = await json_object(request)
+    rotate = body.get("rotate", False)
+    if not isinstance(rotate, bool):
+        raise auth.HTTPError(400, "bad_request")
+    worker_id = request.path_params["worker_id"]
+    async with request.app.state.pool.connection() as conn, conn.transaction():
+        if not await remove_worker(conn, worker_id):
+            raise auth.HTTPError(404, "not_found")
+        if rotate:
+            await rotate_join_token(conn)
+        await auth.audit(conn, admin["id"], admin["username"], "worker.remove",
+                         {"worker_id": worker_id, "rotated_join_token": rotate})
+    return JSONResponse({"removed": worker_id})
+
+
+async def post_rotate(request: Request) -> JSONResponse:
+    admin = await auth.require_staff(request, "admin")
+    async with request.app.state.pool.connection() as conn, conn.transaction():
+        await rotate_join_token(conn)
+        await auth.audit(conn, admin["id"], admin["username"], "workers.rotate_join_token", {})
+    return JSONResponse({"rotated": True})
+
+
+async def get_models(request: Request) -> JSONResponse:
+    await auth.require_staff(request, "teacher")
+    async with request.app.state.pool.connection() as conn:
+        return JSONResponse({"models": await model_list(conn, request.app.state.clock())})
+
+
+async def put_model(request: Request) -> JSONResponse:
+    staff = await auth.require_staff(request, "teacher")
+    enabled = (await json_object(request)).get("enabled")
+    if not isinstance(enabled, bool):
+        raise auth.HTTPError(400, "bad_request")
+    name = request.path_params["name"]
+    async with request.app.state.pool.connection() as conn, conn.transaction():
+        if not await set_model(conn, name, enabled):
+            raise auth.HTTPError(404, "not_found")
+        await auth.audit(conn, staff["id"], staff["username"], "model.enable" if enabled else "model.disable",
+                         {"model": name})
+    return JSONResponse({"name": name, "enabled": enabled})
+
+
+routes = [
+    Route("/api/workers/heartbeat", heartbeat, methods=["POST"]),
+    Route("/api/workers", get_workers, methods=["GET"]),
+    Route("/api/workers/join", get_join, methods=["GET"]),
+    Route("/api/workers/rotate", post_rotate, methods=["POST"]),
+    Route("/api/workers/{worker_id}/remove", post_remove, methods=["POST"]),
+    Route("/api/models", get_models, methods=["GET"]),
+    Route("/api/models/{name:path}", put_model, methods=["PUT"]),
+]

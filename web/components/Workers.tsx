@@ -4,6 +4,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import { onAuthError } from "@/lib/session";
 
 export const POLL_MS = 5000;
 
@@ -29,7 +30,8 @@ export default function Workers() {
       const data = await api<{ workers: Worker[] }>("/workers");
       setWorkers(data.workers);
       setError("");
-    } catch {
+    } catch (e) {
+      onAuthError(e);
       setError("Could not load the workers. Retrying.");
     }
   }, []);
@@ -37,7 +39,8 @@ export default function Workers() {
   const loadJoin = useCallback(async () => {
     try {
       setJoin(await api<Join>("/workers/join"));
-    } catch {
+    } catch (e) {
+      onAuthError(e);
       setError("Could not load the join command.");
     }
   }, []);
@@ -58,7 +61,8 @@ export default function Workers() {
     let failed = false;
     try {
       await api(`/workers/${encodeURIComponent(worker.id)}/remove`, { method: "POST", body: { rotate } });
-    } catch {
+    } catch (e) {
+      onAuthError(e);
       failed = true;
     }
     await load();
@@ -73,7 +77,8 @@ export default function Workers() {
     let failed = false;
     try {
       await api("/workers/rotate", { method: "POST" });
-    } catch {
+    } catch (e) {
+      onAuthError(e);
       failed = true;
     }
     await loadJoin();
