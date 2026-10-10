@@ -1,0 +1,26 @@
+# The worker agent. The admin page's join command sets SERVER_URL and
+# JOIN_TOKEN and runs: docker compose -f worker/compose.yml up -d --build
+# BACKEND_URL defaults to a model server on this machine (Ollama's port).
+# With a llama-server recipe, add -f worker/recipes/compose.yml; see recipes/README.md.
+services:
+  agent:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    environment:
+      SERVER_URL: ${SERVER_URL:?set SERVER_URL from the join command}
+      JOIN_TOKEN: ${JOIN_TOKEN:?set JOIN_TOKEN from the join command}
+      BACKEND_URL: ${BACKEND_URL:-http://host.docker.internal:11434}
+      MAX_CONCURRENT: ${MAX_CONCURRENT:-4}
+      WORKER_URL: ${WORKER_URL:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - agent_data:/data
+      # worker/server-ca.crt, the server's root certificate, when the server
+      # uses HTTPS. The agent ignores a missing file.
+      - .:/etc/classroom-ai:ro
+
+volumes:
+  agent_data: {}

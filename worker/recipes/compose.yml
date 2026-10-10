@@ -1,0 +1,50 @@
+# llama-server for a worker, used together with the agent:
+#   BACKEND_URL=http://llama:8080 docker compose -f worker/compose.yml \
+#     -f worker/recipes/compose.yml --profile nvidia up -d
+# Use --profile cpu on a machine without an NVIDIA GPU. The model server has
+# no published port: only the agent, on the same compose network, reaches it.
+# MODEL is a Hugging Face GGUF repo with a quant tag. Gemma 4 suggestions:
+# 12B-it on 16 GB (ggml-org/gemma-4-12B-it-GGUF:Q4_0), E4B-it on 8 GB
+# (ggml-org/gemma-4-E4B-it-GGUF:Q4_0), E2B-it on CPU (the default).
+# Set MODEL_NAME to the name students should see, and MAX_CONCURRENT to the
+# same value the agent uses.
+x-llama: &llama
+  restart: unless-stopped
+  environment:
+    LLAMA_CACHE: /models
+  volumes:
+    - models:/models
+  command:
+    - --host=0.0.0.0
+    - --port=8080
+    - -hf=${MODEL:-ggml-org/gemma-4-E2B-it-GGUF:Q4_0}
+    - --alias=${MODEL_NAME:-gemma-4-e2b-it}
+    - --parallel=${MAX_CONCURRENT:-4}
+    - --ctx-size=${CONTEXT:-16384}
+  networks:
+    default:
+      aliases: [llama]
+
+services:
+  llama-nvidia:
+    <<: *llama
+    profiles: [nvidia]
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda-b11434@sha256:c6fd6053d3b6a1a54849ab5468971cf3ae03fbf3d72fdfb25a1f862e320cace3
+    environment:
+      LLAMA_CACHE: /models
+      LLAMA_ARG_N_GPU_LAYERS: "999"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  llama-cpu:
+    <<: *llama
+    profiles: [cpu]
+    image: ghcr.io/ggml-org/llama.cpp:server-b11434@sha256:af8c29600d1de84945de13fa7f126d06fdae16c4b19dc7db1c69c74287eae257
+
+volumes:
+  models: {}

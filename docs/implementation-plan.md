@@ -45,6 +45,8 @@ Requirements: R2.1-R2.5, R3.1.
 
 Checks: unit tests for routing and down-detection with a fake clock. API tests for token rejection, removed worker rejection, model toggle. Agent tests: request without the key refused, streaming forwarded, heartbeat payload built from a fake backend. Manual: start the worker stack on the Mac and see it go up, stop it and see it go down within a minute.
 
+Delivered (2026-10-11): `worker/` (agent, image, compose, llama-server and Ollama recipes, firewall notes), migration 004, `app/workers.py` (heartbeat, join token with generations, deny list, 45-second liveness, routing by spare capacity, join commands, staff endpoints with audit rows), the Workers and Models sections on `/admin` and Models on `/teach`. Checked on a Mac with native llama-server and Gemma 4 E2B: the worker went up, and down 41 seconds after its agent stopped. Not yet done here: students seeing only enabled models and failover on a failed request (step 4), a worker joined from a second machine (the Windows test machine run in step 9), and the server's root certificate in the join command (step 9).
+
 ## 3. Classes and lesson sessions
 
 Depends on 1.

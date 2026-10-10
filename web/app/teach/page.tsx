@@ -6,6 +6,7 @@ import { onAuthError, signOut, useStaff } from "@/lib/session";
 import type { ClassInfo } from "@/lib/types";
 import { ServerDown } from "@/app/server-down";
 import { Lesson } from "@/app/teach/lesson";
+import Models from "@/components/Models";
 import forms from "@/app/forms.module.css";
 import styles from "@/app/teach/teach.module.css";
 
@@ -171,6 +172,7 @@ export default function TeachPage() {
         Signed in as {state.staff.username}. <button type="button" onClick={signOut}>Sign out</button>
       </p>
       <Classes admin={state.staff.role === "admin" ? state.staff.username : undefined} />
+      <Models />
     </main>
   );
 }

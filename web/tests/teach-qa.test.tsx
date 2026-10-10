@@ -15,6 +15,7 @@ test("Cancel on the class edit form does not save", async () => {
   document.cookie = "csrf_token=tok";
   stubLocation();
   const fetch = mockApi({
+    "GET /models": { body: { models: [] } },
     "GET /me": { body: { staff: { username: "t", role: "teacher" } } },
     "GET /classes": { body: { classes: [cls] } },
     "PATCH /classes/1": { body: { ...cls, name: "Changed" } },
