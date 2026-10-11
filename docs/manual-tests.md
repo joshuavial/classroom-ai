@@ -4,9 +4,10 @@ Checks a person runs by hand, on real devices, before a pilot lesson. Automated 
 
 ## Setup
 
-1. Start the stack on the Mac: `./scripts/init-env.sh` once, then `BIND_ADDRESS=0.0.0.0 docker compose up -d --build`. This LAN binding is for the supervised device check; return to the install guide's normal binding afterward.
+1. Run `./scripts/init-env.sh` once, then start the stack on the Mac with `GUARD_DISABLED=1 BIND_ADDRESS=0.0.0.0 docker compose up -d --build`. `GUARD_DISABLED=1` is required for chat checks before the Step 6 guard lands. It disables safety checks, so use this LAN binding only for an isolated, supervised device check and do not leave the stack running afterward.
 2. Note the server's LAN address with `ipconfig getifaddr en0`. If that is empty, use the active interface address shown in System Settings > Network. Open that address from each device before continuing.
-3. On a laptop, open `/admin`, enter the setup code from `docker compose logs app`, create the admin, then open `/teach`.
+3. On a laptop, open `/admin`, enter the setup code from `docker compose logs app`, and create the admin. Join a worker, enable one of its models, then open `/teach`.
+4. After the checks, run `docker compose down` and return to the install guide's normal binding for ordinary use.
 
 ## Teacher console on a laptop and an iPad
 
