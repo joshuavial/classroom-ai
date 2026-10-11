@@ -117,7 +117,7 @@ def create_app(
         middleware=[Middleware(auth.CSRFMiddleware)],
         exception_handlers={
             auth.HTTPError: auth.http_error,
-            psycopg.OperationalError: unavailable,
+            psycopg.Error: unavailable,
             PoolTimeout: unavailable,
         },
         lifespan=lifespan,

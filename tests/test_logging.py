@@ -1,9 +1,12 @@
 import json
 import logging
 
+import httpx
+import psycopg
 import pytest
+from starlette.routing import Route
 
-from app.main import JsonLines, from_env, setup_logging
+from app.main import JsonLines, create_app, from_env, setup_logging
 
 
 def test_uvicorn_loggers_write_json():
@@ -32,3 +35,21 @@ def test_access_log_drops_query_strings(caplog):
         access.removeHandler(caplog.handler)
     assert "123456" not in caplog.text
     assert "/api/admin/students" in caplog.text
+
+
+async def test_database_error_detail_stays_out_of_logs(caplog):
+    secret = "DETAIL: failing row contains private chat text"
+
+    async def fail(_request):
+        raise psycopg.errors.CheckViolation(secret)
+
+    app = create_app("postgresql://unused")
+    app.router.routes.append(Route("/_test/database-error", fail))
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    caplog.set_level(logging.ERROR, logger="app")
+    async with httpx.AsyncClient(transport=transport, base_url="https://test") as client:
+        response = await client.get("/_test/database-error")
+
+    assert (response.status_code, response.json()) == (503, {"error": "unavailable"})
+    assert "CheckViolation" in caplog.text
+    assert secret not in caplog.text
