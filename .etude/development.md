@@ -14,6 +14,10 @@ A lane launched with `claude-route` runs `dev-claude`. A lane launched with `cod
 
 Read the parts that bear on the bead, not every document. Cross-check claims against source and tests once code exists, and record contradictions, saying whether the code or the doc is wrong.
 
+## Before claiming work
+
+Before claiming a bead, follow the [before-claiming checklist](checklists/before-claiming.md).
+
 ## Sequence
 
 ```text
@@ -31,6 +35,8 @@ A phase being recorded does not mean it needs a model gate. Verification is alwa
 ## Plan
 
 Record on the bead (`bd update <id> --design`): acceptance criteria mapped to the plan step's Requirements and Checks, invariants to keep, components touched, failure cases, docs to change, and how each criterion will be verified. Plans that outgrow a bead note go in `docs/plans/` and are marked proposed.
+
+Plans that touch sign-in, cookies, CSRF, the database pool or row locks must record an answer, or a reason it does not apply, for every item in the [sessions-and-locks checklist](checklists/sessions-and-locks.md).
 
 ## Implement
 
