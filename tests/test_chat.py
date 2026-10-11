@@ -5,6 +5,7 @@ import json
 import logging
 from datetime import UTC, datetime
 
+import anyio
 import httpx
 import psycopg
 import pytest
@@ -53,8 +54,12 @@ class Script(httpx.AsyncByteStream):
     def __init__(self, steps):
         self.steps = steps
         self.closed = False
+        self.close_checkpoint = False
+        self.reading = asyncio.Event()
 
     async def aclose(self):
+        if self.close_checkpoint:
+            await asyncio.sleep(0)
         self.closed = True
 
     async def __aiter__(self):
@@ -76,6 +81,9 @@ class Script(httpx.AsyncByteStream):
             elif step == "LENGTH":
                 chunk = {"choices": [{"index": 0, "delta": {}, "finish_reason": "length"}]}
                 yield f"data: {json.dumps(chunk)}\n\n".encode()
+            elif step == "WAIT":
+                self.reading.set()
+                await asyncio.Event().wait()
             else:
                 chunk = {"choices": [{"index": 0, "delta": {"content": step}, "finish_reason": None}]}
                 yield f"data: {json.dumps(chunk)}\n\n".encode()
@@ -623,6 +631,27 @@ async def test_disconnect_during_a_backpressured_send_cleans_up(setup, dsn):
     assert rows(dsn, convo)[1][:4] == ("assistant", "Part", "error", 4)
     assert app.state.router.in_flight[ID["w1"]] == app.state.router.in_flight[ID["w2"]] == 0
     assert fake.streams["w1"].closed
+
+
+async def test_cancel_during_upstream_read_awaits_async_close(setup):
+    app, fake = setup
+    fake.scripts["w1"] = ["Part", "WAIT"]
+    worker = workers.Worker(ID["w1"], "http://w1:8081", "key-w1", [MODEL], 4,
+                            app.state.clock(), False, 1)
+    stream = chat.stream_from(app, worker, {}, guard.reply_gate(app, guard.Context(1, 1, "hi")), [])
+    assert await anext(stream) == "Part"
+    upstream = fake.streams["w1"]
+    upstream.close_checkpoint = True
+
+    async def read_again():
+        await anext(stream)
+
+    async with anyio.create_task_group() as tasks:
+        tasks.start_soon(read_again)
+        await upstream.reading.wait()
+        tasks.cancel_scope.cancel()
+
+    assert upstream.closed
 
 
 async def test_conversations_list_and_models(setup, dsn):

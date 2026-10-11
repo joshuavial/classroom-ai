@@ -473,7 +473,10 @@ async def stream_from(app, worker: workers.Worker, body: dict, gate: guard.Reply
                 yield out
     finally:
         if response is not None:
-            await response.aclose()
+            # This generator can be cancelled while it is blocked on an
+            # upstream read, before an outer response-close shield can run.
+            with anyio.CancelScope(shield=True):
+                await response.aclose()
 
 
 routes = [
