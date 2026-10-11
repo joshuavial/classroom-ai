@@ -65,6 +65,38 @@ test("a slow transcript refresh for the same card cannot replace newer messages"
   expect(screen.getByText("current")).toBeInTheDocument();
 });
 
+test("a completed flag review refreshes the student selected now", async () => {
+  let finishReview!: () => void;
+  const json = (body: unknown) => new Response(JSON.stringify(body));
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.endsWith("/students")) return json({ students: [card(1, "Aroha"), card(2, "Ben")] });
+    if (url.endsWith("/usage"))
+      return json({ active_students: 2, total_messages: 1, per_student: [], models: [], flags_by_category: [] });
+    if (url === "/api/flags/9/review" && init?.method === "POST") {
+      await new Promise<void>((resolve) => (finishReview = resolve));
+      return json({ id: 9 });
+    }
+    const id = Number(url.split("/")[3]);
+    const result: Transcript = tr(id, id === 1 ? "Aroha" : "Ben");
+    if (id === 1) result.conversations = [{ id: 1, model: "gemma", started_at: "", messages: [{
+      id: 1, role: "user", text: "flagged", status: "blocked", at: "", flags: [{
+        id: 9, category: "Violent", action: "block_flag", at: "", reviewed_by: null, reviewed_at: null,
+      }],
+    }] }];
+    return json(result);
+  }));
+  render(<Console sessionId={7} version={0} />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: /Aroha/ }));
+  await user.click(await screen.findByRole("button", { name: "Mark reviewed" }));
+  await user.click(screen.getByRole("button", { name: /Ben/ }));
+  expect(await screen.findByRole("region", { name: "Transcript for Ben" })).toBeInTheDocument();
+  finishReview();
+  expect(await screen.findByText("Marked reviewed.")).toBeInTheDocument();
+  expect(screen.getByRole("region", { name: "Transcript for Ben" })).toBeInTheDocument();
+  expect(screen.queryByRole("region", { name: "Transcript for Aroha" })).not.toBeInTheDocument();
+});
+
 test("a slow card and usage refresh cannot replace newer live state", async () => {
   let releaseCards!: () => void;
   let releaseUsage!: () => void;

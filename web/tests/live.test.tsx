@@ -1,6 +1,7 @@
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { Lesson } from "@/app/teach/lesson";
+import { useLiveSession } from "@/lib/live";
 import { mockApi } from "./fetch";
 
 class FakeEventSource {
@@ -82,6 +83,25 @@ test("a stream the server refused is opened again after 15 seconds", async () =>
     act(() => first.onerror?.());
     act(() => vi.advanceTimersByTime(15000));
     expect(FakeEventSource.last).not.toBe(first);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("continuous live events cannot postpone refreshes", () => {
+  vi.useFakeTimers();
+  try {
+    const changed = vi.fn();
+    const Probe = () => {
+      useLiveSession(7, changed);
+      return null;
+    };
+    render(<Probe />);
+    for (let elapsed = 0; elapsed < 5000; elapsed += 250) {
+      act(() => FakeEventSource.last?.emit("message"));
+      act(() => vi.advanceTimersByTime(250));
+    }
+    expect(changed).toHaveBeenCalled();
   } finally {
     vi.useRealTimers();
   }

@@ -6,9 +6,10 @@ import { useEffect, useRef } from "react";
 export const LIVE_EVENTS = ["hello", "resync", "join", "state", "roster", "message", "flag"] as const;
 
 /**
- * Call `onChange` (debounced) whenever the lesson session's live stream says
- * something changed, and on connect and reconnect ("hello") so the page
- * fetches fresh state. The browser's EventSource reconnects on its own.
+ * Call `onChange` (with bounded coalescing) whenever the lesson session's live
+ * stream says something changed, and on connect and reconnect ("hello") so
+ * the page fetches fresh state. The browser's EventSource reconnects on its
+ * own.
  */
 export function useLiveSession(sessionId: number, onChange: () => void, delay = 300): void {
   const latest = useRef(onChange);
@@ -18,8 +19,11 @@ export function useLiveSession(sessionId: number, onChange: () => void, delay = 
     let timer: ReturnType<typeof setTimeout> | undefined;
     let retry: ReturnType<typeof setTimeout> | undefined;
     const fire = () => {
-      clearTimeout(timer);
-      timer = setTimeout(() => latest.current(), delay);
+      if (timer !== undefined) return;
+      timer = setTimeout(() => {
+        timer = undefined;
+        latest.current();
+      }, delay);
     };
     const connect = () => {
       source = new EventSource(`/api/sessions/${sessionId}/events`);

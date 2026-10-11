@@ -182,7 +182,10 @@ export function Console({ sessionId, version }: { sessionId: number; version: nu
       );
     }
     load();
-    loadTranscript(selected);
+    // The teacher may have selected another student while the review request
+    // was in flight. Refresh the transcript that is wanted now, not the one
+    // captured by this render.
+    loadTranscript(wanted.current);
   }
 
   return (
@@ -190,8 +193,15 @@ export function Console({ sessionId, version }: { sessionId: number; version: nu
       <UsageStrip usage={usage} />
       <p role="status">{notice}</p>
       <div className={[styles.layout, transcript && styles.open].filter(Boolean).join(" ")}>
-        <CardGrid cards={cards} selected={selected} onSelect={(id) => setSelected(id === selected ? null : id)} />
-        {transcript && <TranscriptPanel transcript={transcript} onReview={review} onClose={() => setSelected(null)} />}
+        <CardGrid cards={cards} selected={selected} onSelect={(id) => {
+          const next = id === selected ? null : id;
+          wanted.current = next;
+          setSelected(next);
+        }} />
+        {transcript && <TranscriptPanel transcript={transcript} onReview={review} onClose={() => {
+          wanted.current = null;
+          setSelected(null);
+        }} />}
       </div>
     </>
   );
