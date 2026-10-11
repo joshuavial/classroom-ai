@@ -113,6 +113,8 @@ async def test_export_and_delete_one_student(env):
     assert r.headers["cache-control"] == "no-store"
     assert r.headers["content-disposition"] == f'attachment; filename="student-{student_id}.json"'
     assert r.json()["conversations"][0]["messages"][0]["text"] == "What is a volcano?"
+    assert r.json()["conversations"][0]["messages"][0]["guard_status"] is None
+    assert r.json()["conversations"][0]["messages"][0]["guard_checks"] == []
     assert (await admin.get("/api/admin/students/999/export")).status_code == 404
     assert (await admin.get("/api/admin/students/x/export")).status_code == 404
     r = await admin.delete(f"/api/admin/students/{student_id}", headers=await csrf(admin))
@@ -125,6 +127,47 @@ async def test_export_and_delete_one_student(env):
     for _, _, detail in rows:
         assert set(detail) == {"student_id", "lesson_session_id"} and detail["student_id"] == student_id
     assert "volcano" not in str(rows) and "111111" not in str(rows)  # never text or codes
+
+
+async def test_export_includes_guard_evidence(env):
+    app, dsn, client = env
+    student_id, _ = await student(app)
+    with psycopg.connect(dsn) as conn:
+        message_id = conn.execute(
+            "UPDATE messages SET guard_status = 'passed' WHERE id ="
+            " (SELECT id FROM messages ORDER BY id LIMIT 1) RETURNING id"
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO guard_checks"
+            " (message_id, kind, sequence, raw_response, safe, categories, duration_ms)"
+            " VALUES (%s, 'prompt', 0, 'Safety: Safe', true, '[]', 12)",
+            (message_id,),
+        )
+        conn.execute(
+            "INSERT INTO guard_checks"
+            " (message_id, kind, sequence, raw_response, safe, categories, duration_ms)"
+            " VALUES (%s, 'reply_segment', 0, 'Safety: Safe', true, '[]', 20),"
+            " (%s, 'reply_segment', 1, 'Safety: Unsafe', false, '[\"Violent\"]', 21)",
+            (message_id, message_id),
+        )
+    admin = await client("admin")
+    exported = (await admin.get(f"/api/admin/students/{student_id}/export")).json()
+    message = exported["conversations"][0]["messages"][0]
+    assert message["guard_status"] == "passed"
+    assert message["guard_checks"][0] | {"time": None} == {
+        "kind": "prompt",
+        "sequence": 0,
+        "raw_response": "Safety: Safe",
+        "safe": True,
+        "categories": [],
+        "duration_ms": 12,
+        "time": None,
+    }
+    assert [(check["kind"], check["sequence"], check["duration_ms"]) for check in message["guard_checks"]] == [
+        ("prompt", 0, 12),
+        ("reply_segment", 0, 20),
+        ("reply_segment", 1, 21),
+    ]
 
 
 async def test_audit_list_newest_first_and_paged(env):

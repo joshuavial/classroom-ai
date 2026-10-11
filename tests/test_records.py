@@ -64,6 +64,13 @@ class Data:
             "INSERT INTO flags (message_id, category, action, created_at) VALUES (%s, 'violence', 'allow_flag', %s)",
             (message_id, created_at))
 
+    async def guard_check(self, message_id, created_at=NOW - 40 * DAY):
+        return await self.one(
+            "INSERT INTO guard_checks"
+            " (message_id, kind, sequence, raw_response, safe, categories, duration_ms, created_at)"
+            " VALUES (%s, 'prompt', 0, 'Safety: Safe', true, '[]', 12, %s)",
+            (message_id, created_at))
+
 
 async def ids(conn, table):
     cur = await conn.execute(f"SELECT id FROM {table} ORDER BY id")
@@ -251,8 +258,10 @@ async def test_export_contains_the_student_and_nobody_else(pool):
             "model": "gemma-4-e2b-it", "started": t0,
             "messages": [
                 {"role": "user", "text": "What is a volcano?", "status": "ok", "time": t0,
+                 "guard_status": None, "guard_checks": [],
                  "flags": [{"category": "violence", "action": "allow_flag", "time": t0, "reviewed": False}]},
                 {"role": "assistant", "text": "A mountain that erupts.", "status": "ok",
+                 "guard_status": None, "guard_checks": [],
                  "time": (NOW - 2 * DAY + timedelta(seconds=5)).isoformat(), "flags": []},
             ],
         }],
@@ -358,6 +367,18 @@ async def test_retention_skips_a_locked_message_then_deletes_it_later(pool, empt
     assert (await run_promptly(pool))["messages"] == 0
     await reviewer.commit()
     await reviewer.close()
+    assert (await run_promptly(pool))["messages"] == 1
+
+
+async def test_retention_skips_locked_guard_evidence_then_deletes_it_later(pool, empty_dsn):
+    async with pool.connection() as conn:
+        d = Data(conn)
+        conv = await d.conversation(await d.student(await d.session()), NOW - 400 * DAY)
+        old = await d.message(conv, NOW - 40 * DAY)
+        check = await d.guard_check(old)
+    reader = await hold(empty_dsn, "SELECT 1 FROM guard_checks WHERE id = %s FOR UPDATE", (check,))
+    assert (await run_promptly(pool))["messages"] == 0
+    await release(reader)
     assert (await run_promptly(pool))["messages"] == 1
 
 

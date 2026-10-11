@@ -18,11 +18,20 @@
 }
 
 .form input,
-.form select {
+.form select,
+.form textarea {
   font: inherit;
   padding: 0.5rem;
   border: 1px solid #555;
   border-radius: 4px;
+}
+
+.form fieldset {
+  display: grid;
+  gap: 0.75rem;
+  border: 1px solid #bbb;
+  border-radius: 4px;
+  padding: 1rem;
 }
 
 .form button {

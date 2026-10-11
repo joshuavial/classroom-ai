@@ -18,3 +18,4 @@ Template: copy any ADR and keep the headings (Context, Decision, Consequences).
 | [0008](0008-cpu-guard-on-the-server.md) | Cpu guard on the server | Proposed |
 | [0009](0009-segmented-reply-checking.md) | Segmented reply checking | Proposed |
 | [0010](0010-anonymous-model-requests.md) | Anonymous model requests | Proposed |
+| [0011](0011-guard-evidence-and-category-actions.md) | Guard evidence and category actions | Proposed |

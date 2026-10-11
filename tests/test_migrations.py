@@ -15,7 +15,7 @@ def name(offset: int, label: str) -> str:
     return f"{LAST + offset:03d}_{label}.sql"
 TABLES = {
     "staff", "auth_sessions", "classes", "lesson_sessions", "students", "conversations",
-    "messages", "flags", "workers", "models", "settings", "audit", "schema_migrations",
+    "messages", "guard_checks", "flags", "workers", "models", "settings", "audit", "schema_migrations",
 }
 
 
@@ -50,6 +50,44 @@ async def test_already_migrated_database_is_left_alone(empty_dsn):
     await run(empty_dsn)
     assert await run(empty_dsn) == []
     assert versions(empty_dsn) == ALL
+
+
+async def test_guard_migration_preserves_existing_messages_and_settings(empty_dsn, schema_copy):
+    guard_migration = schema_copy / "005_guard_evidence.sql"
+    held = guard_migration.read_text()
+    guard_migration.unlink()
+    assert await run(empty_dsn, schema_copy) == [1, 2, 3, 4]
+    with psycopg.connect(empty_dsn) as conn:
+        staff = conn.execute(
+            "INSERT INTO staff (username, password_hash, role) VALUES ('t', 'x', 'teacher') RETURNING id"
+        ).fetchone()[0]
+        cls = conn.execute(
+            "INSERT INTO classes (teacher_id, name) VALUES (%s, 'Class') RETURNING id", (staff,)
+        ).fetchone()[0]
+        lesson = conn.execute(
+            "INSERT INTO lesson_sessions (class_id) VALUES (%s) RETURNING id", (cls,)
+        ).fetchone()[0]
+        student = conn.execute(
+            "INSERT INTO students (lesson_session_id, code) VALUES (%s, '123456') RETURNING id", (lesson,)
+        ).fetchone()[0]
+        conversation = conn.execute(
+            "INSERT INTO conversations (student_id, model) VALUES (%s, 'm') RETURNING id", (student,)
+        ).fetchone()[0]
+        message = conn.execute(
+            "INSERT INTO messages (conversation_id, role, text, status) VALUES (%s, 'user', 'old', 'ok') RETURNING id",
+            (conversation,),
+        ).fetchone()[0]
+        conn.execute("INSERT INTO settings (key, value) VALUES ('guard_categories', '{\"existing\":true}')")
+    guard_migration.write_text(held)
+    assert await run(empty_dsn, schema_copy) == [5]
+    with psycopg.connect(empty_dsn) as conn:
+        assert conn.execute("SELECT text, guard_status FROM messages WHERE id = %s", (message,)).fetchone() == (
+            "old",
+            None,
+        )
+        assert conn.execute("SELECT value FROM settings WHERE key = 'guard_categories'").fetchone()[0] == {
+            "existing": True
+        }
 
 
 async def test_concurrent_startup_applies_once(empty_dsn):

@@ -16,7 +16,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from app import auth, classes, db, records, students, workers
+from app import auth, classes, db, guard_settings, records, students, workers
 
 log = logging.getLogger("app")
 
@@ -101,7 +101,7 @@ def create_app(
 
     app = Starlette(
         routes=[Route("/healthz", healthz), *auth.routes, *classes.routes, *students.routes,
-                *workers.routes, *records.routes],
+                *workers.routes, *guard_settings.routes, *records.routes],
         middleware=[Middleware(auth.CSRFMiddleware)],
         exception_handlers={
             auth.HTTPError: auth.http_error,
@@ -124,4 +124,3 @@ def from_env() -> Starlette:
     if not dsn:
         raise SystemExit("DATABASE_URL is not set; run scripts/init-env.sh first")
     return create_app(dsn)
-

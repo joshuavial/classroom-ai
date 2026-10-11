@@ -70,12 +70,15 @@ async def run_retention(pool, now: datetime) -> dict[str, int]:
             return counts
         cutoff = now - timedelta(days=await retention_days(conn))
 
-        # Messages, with their flags (ON DELETE CASCADE).
+        # Messages, with their flags and guard checks (ON DELETE CASCADE).
         cur = await conn.execute(
             "SELECT id FROM messages WHERE created_at < %s ORDER BY id FOR UPDATE SKIP LOCKED", (cutoff,))
         message_ids = {r[0] for r in await cur.fetchall()}
         message_ids -= await partly_locked(
             conn, message_ids, "SELECT message_id, id FROM flags WHERE message_id = ANY(%s)", "flags")
+        message_ids -= await partly_locked(
+            conn, message_ids,
+            "SELECT message_id, id FROM guard_checks WHERE message_id = ANY(%s)", "guard_checks")
         cur = await conn.execute("DELETE FROM messages WHERE id = ANY(%s)", (list(message_ids),))
         counts["messages"] = cur.rowcount
 
@@ -168,17 +171,26 @@ async def export_student(conn, student_id: int) -> dict | None:
     conversations = []
     for conv_id, model, started_at in await cur.fetchall():
         msgs = await conn.execute(
-            "SELECT id, role, text, status, created_at FROM messages"
+            "SELECT id, role, text, status, guard_status, created_at FROM messages"
             " WHERE conversation_id = %s ORDER BY id", (conv_id,))
         messages = []
-        for msg_id, role, text, status, created_at in await msgs.fetchall():
+        for msg_id, role, text, status, guard_status, created_at in await msgs.fetchall():
             fl = await conn.execute(
                 "SELECT category, action, created_at, reviewed_at FROM flags"
                 " WHERE message_id = %s ORDER BY id", (msg_id,))
             flags = [{"category": cat, "action": act, "time": iso(t),
                       "reviewed": rev is not None} for cat, act, t, rev in await fl.fetchall()]
+            checked = await conn.execute(
+                "SELECT kind, sequence, raw_response, safe, categories, duration_ms, created_at FROM guard_checks"
+                " WHERE message_id = %s ORDER BY id", (msg_id,))
+            checks = [
+                {"kind": kind, "sequence": sequence, "raw_response": raw, "safe": safe,
+                 "categories": categories, "duration_ms": duration_ms, "time": iso(t)}
+                for kind, sequence, raw, safe, categories, duration_ms, t in await checked.fetchall()
+            ]
             messages.append({"role": role, "text": text, "status": status,
-                             "time": iso(created_at), "flags": flags})
+                             "guard_status": guard_status, "time": iso(created_at),
+                             "guard_checks": checks, "flags": flags})
         conversations.append({"model": model, "started": iso(started_at), "messages": messages})
     return {
         "student": {"id": sid, "code": code, "name": name, "removed": removed,

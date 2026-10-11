@@ -59,13 +59,92 @@ def test_deleting_a_student_removes_their_data_and_cookies(conn):
     ).fetchone()[0]
     conn.execute("INSERT INTO flags (message_id, category, action) VALUES (%s, 'Violent', 'block_flag')", (msg,))
     conn.execute(
+        "INSERT INTO guard_checks"
+        " (message_id, kind, sequence, raw_response, safe, categories, duration_ms)"
+        " VALUES (%s, 'prompt', 0, 'Unsafe', false, '[\"Violent\"]', 12)",
+        (msg,),
+    )
+    conn.execute(
         "INSERT INTO auth_sessions (token_hash, student_id, csrf_token, expires_at) VALUES (%s, %s, 'c', now())",
         (hashlib.sha256(b"t").digest(), student),
     )
     conn.execute("DELETE FROM students WHERE id = %s", (student,))
     for table, col, value in [("conversations", "student_id", student), ("messages", "conversation_id", convo),
-                              ("flags", "message_id", msg), ("auth_sessions", "student_id", student)]:
+                              ("flags", "message_id", msg), ("guard_checks", "message_id", msg),
+                              ("auth_sessions", "student_id", student)]:
         assert conn.execute(f"SELECT count(*) FROM {table} WHERE {col} = %s", (value,)).fetchone()[0] == 0
+
+
+def test_guard_status_and_evidence_constraints(conn):
+    session = lesson(conn)
+    student = conn.execute(
+        "INSERT INTO students (lesson_session_id, code) VALUES (%s, '333333') RETURNING id", (session,)
+    ).fetchone()[0]
+    conversation = conn.execute(
+        "INSERT INTO conversations (student_id, model) VALUES (%s, 'm') RETURNING id", (student,)
+    ).fetchone()[0]
+
+    def message(status="ok", guard_status=None):
+        return conn.execute(
+            "INSERT INTO messages (conversation_id, role, status, guard_status)"
+            " VALUES (%s, 'user', %s, %s) RETURNING id",
+            (conversation, status, guard_status),
+        ).fetchone()[0]
+
+    passed, blocked = message("ok", "passed"), message("blocked", "blocked")
+    message("error", None)
+    message("error", "passed")
+    message("error", "error")
+    for status, guard_status in [("ok", "blocked"), ("blocked", "passed"), ("blocked", "error"), ("ok", "error")]:
+        with pytest.raises(psycopg.errors.CheckViolation):
+            with conn.transaction():
+                message(status, guard_status)
+    conn.execute(
+        "INSERT INTO guard_checks"
+        " (message_id, kind, sequence, raw_response, safe, categories, duration_ms)"
+        " VALUES (%s, 'prompt', 0, 'Safe', true, '[]', 12)",
+        (passed,),
+    )
+    assert conn.execute(
+        "SELECT duration_ms FROM guard_checks WHERE message_id = %s", (passed,)
+    ).fetchone()[0] == 12
+    conn.execute(
+        "INSERT INTO guard_checks"
+        " (message_id, kind, sequence, raw_response, safe, categories, duration_ms)"
+        " VALUES (%s, 'reply_segment', 0, 'Unsafe', false, '[\"Violent\"]', 20),"
+        " (%s, 'reply_segment', 1, 'Unsafe', false, '[\"Violent\"]', 21)",
+        (blocked, blocked),
+    )
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        with conn.transaction():
+            conn.execute(
+                "INSERT INTO guard_checks"
+                " (message_id, kind, sequence, raw_response, safe, categories, duration_ms)"
+                " VALUES (%s, 'prompt', 0, 'again', true, '[]', 12)",
+                (passed,),
+            )
+    with pytest.raises(psycopg.errors.NotNullViolation):
+        with conn.transaction():
+            conn.execute(
+                "INSERT INTO guard_checks (message_id, kind, sequence, raw_response, safe, categories)"
+                " VALUES (%s, 'prompt', 0, 'missing duration', true, '[]')",
+                (message(),),
+            )
+    for kind, sequence, raw, categories, duration_ms in [
+        ("prompt", 1, "bad", "[]", 12),
+        ("other", 0, "bad", "[]", 12),
+        ("prompt", 0, "x" * 8193, "[]", 12),
+        ("prompt", 0, "bad", "{}", 12),
+        ("prompt", 0, "bad", "[]", -1),
+    ]:
+        with pytest.raises(psycopg.errors.CheckViolation):
+            with conn.transaction():
+                conn.execute(
+                    "INSERT INTO guard_checks"
+                    " (message_id, kind, sequence, raw_response, safe, categories, duration_ms)"
+                    " VALUES (%s, %s, %s, %s, true, %s, %s)",
+                    (message(), kind, sequence, raw, categories, duration_ms),
+                )
 
 
 def test_auth_session_needs_exactly_one_principal(conn):

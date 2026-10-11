@@ -8,6 +8,7 @@ import { ServerDown } from "@/app/server-down";
 import Models from "@/components/Models";
 import Workers from "@/components/Workers";
 import Records from "@/components/Records";
+import GuardSettings from "@/components/GuardSettings";
 
 type StaffRow = { username: string; role: Role; created_at: string };
 
@@ -119,6 +120,7 @@ export default function AdminPage() {
       </p>
       <Workers />
       <Models />
+      <GuardSettings />
       <StaffAccounts />
       <Records />
     </main>

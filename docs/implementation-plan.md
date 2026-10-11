@@ -107,6 +107,8 @@ Requirements: R4.5, R6.1-R6.6.
 
 Checks: unit tests for parsing every verdict shape. API tests for saving the settings, and with the fake guard for each action (allow+flag, block+flag, block), a block with the configured message shown and no model reply, a reply segment tripping mid-stream, guard down. On demand: the step 5 script against the guard as deployed.
 
+Partial delivery: migration 005 adds message guard status and ordered guard evidence rows, including each check's duration in milliseconds. The versioned category settings document, authenticated admin API and admin form are present with an always-active Uncategorized fallback. Student export and retention include the new evidence. The winner-specific category seed, compose service, verdict parser and chat pipeline enforcement remain to be delivered after steps 4 and 5.
+
 ## 7. Teacher console, live
 
 Depends on 6.
