@@ -547,7 +547,7 @@ async def test_close_waiting_on_a_join_deletes_the_new_cookie(app, teacher, dsn)
     # A join that holds its locks until commit makes a close wait; the close
     # then removes the cookie row the join created.
     session_id, roster = await new_lesson(teacher, 1)
-    with psycopg.connect(dsn) as joiner:
+    with psycopg.connect(dsn) as joiner, psycopg.connect(dsn, autocommit=True) as observer:
         joiner.execute(
             "SELECT 1 FROM students st JOIN lesson_sessions l ON l.id = st.lesson_session_id"
             " WHERE st.id = %s FOR UPDATE OF st FOR SHARE OF l", (roster[0]["id"],))
@@ -557,8 +557,8 @@ async def test_close_waiting_on_a_join_deletes_the_new_cookie(app, teacher, dsn)
         closing = asyncio.create_task(post(teacher, f"/api/sessions/{session_id}/state", {"state": "closed"}))
         for _ in range(100):
             await asyncio.sleep(0.05)
-            waiting = joiner.execute("SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock'"
-                                     " AND query LIKE 'UPDATE lesson_sessions%%'").fetchone()[0]
+            waiting = observer.execute("SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock'"
+                                       " AND query LIKE 'UPDATE lesson_sessions%%'").fetchone()[0]
             if waiting:
                 break
         assert waiting and not closing.done()
