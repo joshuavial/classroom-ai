@@ -256,6 +256,18 @@ at Q8_0. Matching quantisation avoids a precision-level advantage.
 | Qwen3Guard-Gen-4B | `mradermacher/Qwen3Guard-Gen-4B-GGUF@b3b010b37c75197c5e887fa7dce9ff907d0be6ff` | `9baa737b535c56b8e04965833d38a0e595fac0fd003306e5f0b039788044e3a8` |
 | Shieldstral-1.0-3B | `noctrex/Shieldstral-1.0-3B-GGUF@c6baba9c3299630d7d6e3fdd40371683b5cb0e5c` | `35b755bed2d473fb3d88f7d1d7b83203bd9f0c1b8bff42624e6fd9231d89d3c4` |
 
+The independent Qwen template fixture in
+`tests/fixtures/qwen3guard-template-renderings.json` was generated with Hugging
+Face Transformers from the official
+`Qwen/Qwen3Guard-Gen-0.6B@fada3b2f655b89601929198343c94cd2f64d93cc`
+and `Qwen/Qwen3Guard-Gen-4B@6ec42827da0c1ff11e7a49dc269d2e810d27e108`
+repositories. Their `tokenizer_config.json` files are byte-identical, with
+SHA-256 `934e187433b06c5d28519e0347dd293084cf28621f00a86ae7e24e42f8b53e81`.
+The fixture pins exact prompt and reply renderings and their hashes. The
+standard-library bake-off harness validates the fixture hash and compares
+llama-server output with those independent renderings, so routine runs need no
+Transformers dependency or network access.
+
 Runs used a MacBook Pro `Mac16,6`, Apple M4 Max with 12 performance and 4
 efficiency cores, 128 GB RAM, and macOS 26.5.2 build 25F84. The native
 llama-server was llama.cpp 0.4.1 build 10964, commit `b29c606e2`, built with

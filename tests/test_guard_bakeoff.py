@@ -429,24 +429,40 @@ class ConfigurationAndTemplateTests(unittest.TestCase):
         with self.assertRaisesRegex(guard.ValidationError, "offloaded to a GPU"):
             guard.validate_cpu_only_log("load_tensors: offloaded 4/29 layers to GPU")
 
-    def test_official_qwen_reply_render_keeps_reply_before_generation_prompt(self):
-        messages = [
-            {"role": "user", "content": "FIXED-PROMPT"},
-            {"role": "assistant", "content": "COMPLETE-FIXED-REPLY"},
-        ]
-        rendered = guard.render_official_qwen_template(messages)
+    def test_official_qwen_fixture_covers_pinned_prompt_and_reply(self):
+        records = guard.load_corpus(CORPUS_PATH)
+        expected_hashes = {
+            "prompt": "ca5979c3aa4d62bb58774aaa1206547ab6a9c61e2212be851a5db8bde9a56e47",
+            "reply": "a36472933a2a34b21dc028b119bd911588e877ce2bff0af5c394e0e8853113a4",
+        }
+        for role, expected_hash in expected_hashes.items():
+            record = next(record for record in records if record["role"] == role)
+            messages, rendered = guard.qwen_template_fixture_case(record)
+            self.assertEqual(hashlib.sha256(rendered.encode()).hexdigest(), expected_hash)
+            guard.validate_template_evidence(
+                messages, rendered, rendered.replace("\n", "  \n")
+            )
+
+        reply_record = next(record for record in records if record["role"] == "reply")
+        _, rendered = guard.qwen_template_fixture_case(reply_record)
         marker = "Provide your safety assessment for ONLY THE LAST **ASSISTANT's response**"
-        self.assertLess(rendered.index("COMPLETE-FIXED-REPLY"), rendered.index(marker))
-        guard.validate_template_evidence(messages, rendered, rendered.replace("\n", "  \n"))
+        self.assertLess(rendered.index(reply_record["text"]), rendered.index(marker))
+
+    def test_qwen_fixture_rejects_corpus_record_drift(self):
+        reply = next(
+            record for record in guard.load_corpus(CORPUS_PATH) if record["role"] == "reply"
+        )
+        reply["text"] += " changed"
+        with self.assertRaisesRegex(guard.ValidationError, "pinned record"):
+            guard.qwen_template_fixture_case(reply)
 
     def test_template_validation_rejects_content_reordering(self):
-        messages = [
-            {"role": "user", "content": "FIXED-PROMPT"},
-            {"role": "assistant", "content": "COMPLETE-FIXED-REPLY"},
-        ]
-        expected = guard.render_official_qwen_template(messages)
-        actual = expected.replace("ASSISTANT: COMPLETE-FIXED-REPLY", "ASSISTANT:")
-        actual += "COMPLETE-FIXED-REPLY"
+        reply = next(
+            record for record in guard.load_corpus(CORPUS_PATH) if record["role"] == "reply"
+        )
+        messages, expected = guard.qwen_template_fixture_case(reply)
+        actual = expected.replace(f"ASSISTANT: {reply['text']}", "ASSISTANT:")
+        actual += reply["text"]
         with self.assertRaises(guard.ValidationError):
             guard.validate_template_evidence(messages, expected, actual)
 
@@ -674,6 +690,19 @@ class LatencyPassTests(unittest.TestCase):
             guard.latency_subset_sha256(subset),
             "6d6b32970588d8f991a25839575f81ccda95a606f6560aa6ad3a765ff59fd06b",
         )
+
+    def test_latency_template_evidence_uses_full_corpus_fixture_records(self):
+        subset_ids = {
+            record["id"] for record in guard.select_latency_subset(self.records)
+        }
+        fixture_records = guard.qwen_template_fixture_records(self.records)
+        fixture_ids = [record["id"] for record in fixture_records]
+        self.assertEqual(fixture_ids, ["xstest-0001", "original-0351"])
+        self.assertTrue(set(fixture_ids).isdisjoint(subset_ids))
+        with self.assertRaisesRegex(guard.ValidationError, "missing from the full corpus"):
+            guard.qwen_template_fixture_records(
+                guard.select_latency_subset(self.records)
+            )
 
     def test_schedule_has_seven_batches_and_round_robin_candidate_rotation(self):
         subset = guard.select_latency_subset(self.records)
