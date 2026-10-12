@@ -28,6 +28,8 @@ def pg_server() -> str:
     name = f"classroom-ai-test-{secrets.token_hex(4)}"
     _docker(
         "run", "-d", "--rm", "--name", name,
+        # Data on tmpfs: the image declares a volume, and a killed run would otherwise leave ~0.6 GB behind each time.
+        "--tmpfs", "/var/lib/postgresql",
         "-e", f"POSTGRES_PASSWORD={PG_PASSWORD}",
         "-p", "127.0.0.1::5432",
         PG_IMAGE,
@@ -46,7 +48,7 @@ def pg_server() -> str:
                 time.sleep(0.5)
         yield dsn
     finally:
-        subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+        subprocess.run(["docker", "rm", "-f", "-v", name], capture_output=True)
 
 
 def _make_database(server_dsn: str) -> str:
