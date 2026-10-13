@@ -20,21 +20,26 @@ def _docker(*args: str) -> str:
     return subprocess.run(["docker", *args], check=True, capture_output=True, text=True).stdout.strip()
 
 
+def drop_container(name: str) -> None:
+    """Remove a test container and any anonymous volume Docker attached to it."""
+    subprocess.run(["docker", "rm", "-f", "-v", name], capture_output=True)
+
+
 @pytest.fixture(scope="session")
 def pg_server() -> str:
     """Start Postgres in Docker. Yields a DSN for its maintenance database."""
     if not shutil.which("docker"):
         pytest.fail("Docker is required for the test Postgres and was not found on PATH")
     name = f"classroom-ai-test-{secrets.token_hex(4)}"
-    _docker(
-        "run", "-d", "--rm", "--name", name,
-        # Data on tmpfs: the image declares a volume, and a killed run would otherwise leave ~0.6 GB behind each time.
-        "--tmpfs", "/var/lib/postgresql",
-        "-e", f"POSTGRES_PASSWORD={PG_PASSWORD}",
-        "-p", "127.0.0.1::5432",
-        PG_IMAGE,
-    )
     try:
+        _docker(
+            "run", "-d", "--rm", "--name", name,
+            # Data on tmpfs: the image declares a volume, and a killed run would otherwise leave ~0.6 GB behind each time.
+            "--tmpfs", "/var/lib/postgresql",
+            "-e", f"POSTGRES_PASSWORD={PG_PASSWORD}",
+            "-p", "127.0.0.1::5432",
+            PG_IMAGE,
+        )
         port = _docker("port", name, "5432/tcp").splitlines()[0].rsplit(":", 1)[1]
         dsn = f"postgresql://postgres:{PG_PASSWORD}@127.0.0.1:{port}/postgres"
         deadline = time.monotonic() + 60
@@ -48,7 +53,7 @@ def pg_server() -> str:
                 time.sleep(0.5)
         yield dsn
     finally:
-        subprocess.run(["docker", "rm", "-f", "-v", name], capture_output=True)
+        drop_container(name)
 
 
 def _make_database(server_dsn: str) -> str:
