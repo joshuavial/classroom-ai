@@ -77,5 +77,48 @@ test("a student joins and chats, and the teacher sees it live", async ({ browser
   await expect(cards.getByRole("button", { name: /Aroha/ })).toContainText("Cells are the units of life.", {
     timeout: 5_000,
   });
+  // Deliver a real, stored server reply to the browser one SSE event at a time.
+  // This makes navigation during streaming deterministic without a slow model.
+  await student.evaluate(() => {
+    const realFetch = window.fetch.bind(window);
+    window.fetch = async (...args) => {
+      const response = await realFetch(...args);
+      if (!String(args[0]).endsWith("/messages")) return response;
+      const chunks = (await response.text()).split("\n\n").filter(Boolean);
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        start(controller) {
+          (window as unknown as { nextChatEvent: () => void }).nextChatEvent = () => {
+            const chunk = chunks.shift();
+            if (chunk) controller.enqueue(encoder.encode(chunk + "\n\n"));
+            if (!chunks.length) controller.close();
+          };
+        },
+      });
+      return new Response(stream, { headers: response.headers, status: response.status });
+    };
+  });
+  await student.getByLabel("Your message").fill("Tell me more about cells");
+  await student.getByLabel("Your message").press("Enter");
+  await student.waitForFunction(() => typeof (window as unknown as { nextChatEvent?: unknown }).nextChatEvent === "function");
+  const nextEvent = () => student.evaluate(() => (window as unknown as { nextChatEvent: () => void }).nextChatEvent());
+  await nextEvent();
+  const transcript = student.getByRole("log", { name: "Conversation" });
+  await expect(transcript).toContainText("Tell me more about cells");
+  await student.getByRole("button", { name: "New conversation", exact: true }).click();
+  await expect(transcript).not.toContainText("Cells");
+  await nextEvent();
+  await expect(transcript).not.toContainText("Cells");
+  await student.getByRole("button", { name: /What is a cell/ }).click();
+  await expect(transcript).toContainText("Tell me more about cells");
+  await expect(transcript.locator("p").last()).toContainText("Cells are");
+  // Four more deltas and the done event finish the six-piece fake reply.
+  for (let i = 0; i < 5; i++) await nextEvent();
+  await expect(student.getByLabel("Your message")).toBeEnabled();
+  await expect(transcript.locator("p").last()).toHaveText("AI: Cells are the units of life.");
+  // Reload from storage to prove navigation did not alter the persisted reply.
+  await student.reload();
+  await student.getByRole("button", { name: /What is a cell/ }).click();
+  await expect(student.getByRole("log").locator("p").last()).toHaveText("AI: Cells are the units of life.");
   if (process.env.E2E_SCREENSHOT) await teacher.screenshot({ path: process.env.E2E_SCREENSHOT, fullPage: true });
 });

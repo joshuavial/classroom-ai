@@ -1,6 +1,6 @@
 "use client";
 
-import { type FormEvent, type KeyboardEvent, useCallback, useEffect, useState } from "react";
+import { type FormEvent, type KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, api } from "@/lib/api";
 import { sendMessage } from "@/lib/chat";
 import type { ChatMessage, Conversation, Student } from "@/lib/types";
@@ -24,7 +24,15 @@ export function Chat({ student, onChanged }: { student: Student; onChanged: () =
   const [model, setModel] = useState("");
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [current, setCurrent] = useState<Conversation | null>(null);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [transcripts, setTranscripts] = useState<Record<number, ChatMessage[]>>({});
+  const [loading, setLoading] = useState<Record<number, boolean>>({});
+  const activeTurn = useRef<number | null>(null);
+  const revisions = useRef<Record<number, number>>({});
+  const messages = current ? (transcripts[current.id] ?? []) : [];
+
+  function changeMessages(id: number, change: (messages: ChatMessage[]) => ChatMessage[]) {
+    setTranscripts((all) => ({ ...all, [id]: change(all[id] ?? []) }));
+  }
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
@@ -49,9 +57,18 @@ export function Chat({ student, onChanged }: { student: Student; onChanged: () =
 
   async function open(convo: Conversation) {
     setNotice("");
-    const r = await api<{ messages: ChatMessage[] }>(`/student/conversations/${convo.id}`).catch(() => null);
     setCurrent(convo);
-    setMessages(r?.messages ?? []);
+    // The server omits pending replies. Keep the local transcript during a turn.
+    if (activeTurn.current === convo.id) return;
+    const revision = (revisions.current[convo.id] ?? 0) + 1;
+    revisions.current[convo.id] = revision;
+    setLoading((all) => ({ ...all, [convo.id]: true }));
+    const r = await api<{ messages: ChatMessage[] }>(`/student/conversations/${convo.id}`).catch(() => null);
+    // A newer load or send owns this transcript, even if it has already finished.
+    if (revisions.current[convo.id] === revision) {
+      if (r) changeMessages(convo.id, () => r.messages);
+      setLoading((all) => ({ ...all, [convo.id]: false }));
+    }
   }
 
   async function startNew() {
@@ -59,7 +76,7 @@ export function Chat({ student, onChanged }: { student: Student; onChanged: () =
     try {
       const convo = await api<Conversation>("/student/conversations", { method: "POST", body: { model } });
       setCurrent(convo);
-      setMessages([]);
+      changeMessages(convo.id, () => []);
       loadConversations();
     } catch (e) {
       const { code, text } = refusal(e);
@@ -71,31 +88,35 @@ export function Chat({ student, onChanged }: { student: Student; onChanged: () =
   async function send(event?: FormEvent) {
     event?.preventDefault();
     const text = draft.trim();
-    if (!current || !text || busy) return;
+    if (!current || !text || busy || loading[current.id]) return;
+    const conversationId = current.id;
+    activeTurn.current = conversationId;
+    revisions.current[conversationId] = (revisions.current[conversationId] ?? 0) + 1;
     setBusy(true);
     setNotice("");
     const replyId = `reply-${Date.now()}`;
-    setMessages((m) => [
+    changeMessages(conversationId, (m) => [
       ...m,
       { id: `you-${Date.now()}`, role: "user", text, status: "ok" },
       { id: replyId, role: "assistant", text: "", status: "pending" },
     ]);
     setDraft("");
     const update = (fn: (m: ChatMessage) => ChatMessage) =>
-      setMessages((all) => all.map((m) => (m.id === replyId ? fn(m) : m)));
+      changeMessages(conversationId, (all) => all.map((m) => (m.id === replyId ? fn(m) : m)));
     try {
-      const outcome = await sendMessage(current.id, text, (delta) => update((m) => ({ ...m, text: m.text + delta })));
+      const outcome = await sendMessage(conversationId, text, (delta) => update((m) => ({ ...m, text: m.text + delta })));
       if (outcome.kind === "done") update((m) => ({ ...m, status: "ok" }));
       else if (outcome.kind === "blocked")
         update((m) => ({ ...m, status: "blocked", text: m.text ? `${m.text}\n${outcome.message}` : outcome.message }));
       else update((m) => ({ ...m, status: "error", text: m.text ? `${m.text}\n${outcome.message}` : outcome.message }));
     } catch (e) {
       const { code, text: message } = refusal(e);
-      setMessages((all) => all.filter((m) => m.id !== replyId));
+      changeMessages(conversationId, (all) => all.filter((m) => m.id !== replyId));
       setNotice(message);
       if (code === "model_off") loadModels();
       if (code === "paused" || code === "limit_reached") onChanged();
     } finally {
+      activeTurn.current = null;
       setBusy(false);
       loadConversations();
       onChanged();
@@ -160,9 +181,9 @@ export function Chat({ student, onChanged }: { student: Student; onChanged: () =
                 maxLength={4000}
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={keyDown}
-                disabled={busy || paused || left === 0}
+                disabled={busy || !!loading[current.id] || paused || left === 0}
               />
-              <button type="submit" disabled={busy || paused || left === 0 || !draft.trim()}>
+              <button type="submit" disabled={busy || !!loading[current.id] || paused || left === 0 || !draft.trim()}>
                 Send
               </button>
             </form>

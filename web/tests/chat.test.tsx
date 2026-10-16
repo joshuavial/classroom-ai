@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import { Chat } from "@/app/chat";
@@ -139,4 +139,96 @@ test("sending is off while the class is paused", async () => {
   await screen.findByRole("option", { name: "gemma" });
   await user.click(screen.getByRole("button", { name: "New conversation" }));
   expect(await screen.findByLabelText("Your message")).toBeDisabled();
+});
+
+
+test.each(["done", "blocked", "error"])("navigation preserves the owning reply through %s", async (ending) => {
+  document.cookie = "csrf_token=tok";
+  const s = streamed([ev("delta", { text: "First" }), ev("delta", { text: " second" }),
+    ev(ending, ending === "done" ? { id: 12 } : { message: "Stopped." })]);
+  const convos = [
+    { id: 9, model: "gemma", started_at: "", title: "Chat A" },
+    { id: 10, model: "gemma", started_at: "", title: "Chat B" },
+  ];
+  vi.stubGlobal("fetch", routes({
+    "GET /api/student/conversations": () => Response.json({ conversations: convos }),
+    "GET /api/student/conversations/9": () => Response.json({ messages: [] }),
+    "GET /api/student/conversations/10": () => Response.json({ messages: [
+      { id: 11, role: "assistant", text: "Other conversation", status: "ok" },
+    ] }),
+    "POST /api/student/conversations/9/messages": () => s.response,
+  }));
+  render(<Chat student={student} onChanged={() => {}} />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: /Chat A/ }));
+  await user.type(await screen.findByLabelText("Your message"), "Question{Enter}");
+  await act(async () => s.next());
+  const log = screen.getByRole("log");
+  await vi.waitFor(() => expect(log).toHaveTextContent("First"));
+  await user.click(screen.getByRole("button", { name: /Chat B/ }));
+  await vi.waitFor(() => expect(log).toHaveTextContent("Other conversation"));
+  await act(async () => s.next());
+  expect(log).not.toHaveTextContent("First");
+  expect(log).not.toHaveTextContent("second");
+  await user.click(screen.getByRole("button", { name: /Chat A/ }));
+  await vi.waitFor(() => expect(log).toHaveTextContent("First second"));
+  expect(log).toHaveTextContent("Question");
+  expect(log).not.toHaveTextContent("Other conversation");
+  await act(async () => s.next());
+  await vi.waitFor(() => expect(screen.getByLabelText("Your message")).toBeEnabled());
+  if (ending !== "done") expect(log).toHaveTextContent("Stopped.");
+  expect(log).toHaveTextContent("First second");
+});
+
+test("a late transcript response cannot select an older navigation", async () => {
+  let resolveA!: (response: Response) => void;
+  const pendingA = new Promise<Response>((resolve) => { resolveA = resolve; });
+  const base = routes({
+    "GET /api/student/conversations": () => Response.json({ conversations: [
+      { id: 9, model: "gemma", title: "Chat A" }, { id: 10, model: "gemma", title: "Chat B" },
+    ] }),
+    "GET /api/student/conversations/10": () => Response.json({ messages: [
+      { id: 11, role: "assistant", text: "Conversation B", status: "ok" },
+    ] }),
+  });
+  vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) =>
+    url === "/api/student/conversations/9" ? pendingA : base(url, init)));
+  render(<Chat student={student} onChanged={() => {}} />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: /Chat A/ }));
+  await user.click(screen.getByRole("button", { name: /Chat B/ }));
+  await vi.waitFor(() => expect(screen.getByRole("log")).toHaveTextContent("Conversation B"));
+  await act(async () => resolveA(Response.json({ messages: [] })));
+  expect(screen.getByRole("log")).toHaveTextContent("Conversation B");
+  expect(screen.getByRole("button", { name: /Chat B/ })).toHaveAttribute("aria-current", "true");
+});
+
+test("a transcript loaded before a turn cannot erase the completed reply", async () => {
+  document.cookie = "csrf_token=tok";
+  let resolveHistory!: (response: Response) => void;
+  const history = new Promise<Response>((resolve) => { resolveHistory = resolve; });
+  const base = routes({
+    "GET /api/student/conversations": () => Response.json({ conversations: [
+      { id: 9, model: "gemma", title: "Chat A" },
+    ] }),
+    "POST /api/student/conversations/9/messages": () => new Response(
+      ev("delta", { text: "A complete reply" }) + ev("done", { id: 12 }),
+      { headers: { "content-type": "text/event-stream" } }),
+  });
+  let loads = 0;
+  vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) =>
+    url === "/api/student/conversations/9"
+      ? (++loads === 1 ? history : Promise.resolve(Response.json({ messages: [] })))
+      : base(url, init)));
+  render(<Chat student={student} onChanged={() => {}} />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: /Chat A/ }));
+  expect(screen.getByLabelText("Your message")).toBeDisabled();
+  await user.click(screen.getByRole("button", { name: /Chat A/ }));
+  await vi.waitFor(() => expect(screen.getByLabelText("Your message")).toBeEnabled());
+  await user.type(screen.getByLabelText("Your message"), "Question{Enter}");
+  await vi.waitFor(() => expect(screen.getByLabelText("Your message")).toBeEnabled());
+  expect(screen.getByRole("log")).toHaveTextContent("A complete reply");
+  await act(async () => resolveHistory(Response.json({ messages: [] })));
+  expect(screen.getByRole("log")).toHaveTextContent("A complete reply");
 });
