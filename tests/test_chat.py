@@ -516,7 +516,7 @@ async def test_a_pending_prompt_never_appears_in_another_turns_history(setup, ds
 
 
 @pytest.mark.parametrize("verdict", [guard.Verdict(), guard.Verdict("block_flag", ("Violent",), "Stopped")])
-async def test_late_guard_verdict_cannot_revive_a_swept_prompt(setup, dsn, monkeypatch, verdict):
+async def test_late_guard_verdict_cannot_revive_a_swept_prompt(setup, dsn, monkeypatch, verdict, caplog):
     app, fake = setup
     entered, release = asyncio.Event(), asyncio.Event()
 
@@ -549,6 +549,12 @@ async def test_late_guard_verdict_cannot_revive_a_swept_prompt(setup, dsn, monke
         assert conn.execute("SELECT verdict FROM messages WHERE conversation_id = %s", (convo,)).fetchone() == (None,)
         assert conn.execute("SELECT count(*) FROM flags f JOIN messages m ON m.id = f.message_id"
                             " WHERE m.conversation_id = %s", (convo,)).fetchone() == (0,)
+        message_id = conn.execute("SELECT id FROM messages WHERE conversation_id = %s", (convo,)).fetchone()[0]
+    warnings = [r for r in caplog.records if r.name == "app.chat" and r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert f"message {message_id}" in warnings[0].getMessage()
+    assert warnings[0].args == (message_id,)
+    assert "slow guard" not in caplog.text
     assert (await student.get("/api/student/me")).json()["student"]["messages_used"] == 0
 
 

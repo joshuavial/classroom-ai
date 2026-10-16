@@ -194,6 +194,7 @@ async def store_verdict(conn, message_id: int, verdict: guard.Verdict, status: s
         "UPDATE messages SET status = %s, verdict = %s WHERE id = %s AND status = 'pending'",
         (status, Jsonb(verdict.to_json()), message_id))
     if cur.rowcount != 1:
+        log.warning("guard verdict refused; message %s is no longer pending", message_id)
         raise HTTPError(503, "chat_unavailable")
     await store_flags(conn, message_id, [verdict])
 
