@@ -180,6 +180,60 @@ test.each(["done", "blocked", "error"])("navigation preserves the owning reply t
   expect(log).toHaveTextContent("First second");
 });
 
+test("a failed transcript load keeps the cached text and shows a notice", async () => {
+  let loads = 0;
+  const base = routes({
+    "GET /api/student/conversations": () => Response.json({ conversations: [
+      { id: 9, model: "gemma", title: "Chat A" },
+    ] }),
+  });
+  vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+    if (url === "/api/student/conversations/9") {
+      loads += 1;
+      if (loads === 1) {
+        return Promise.resolve(Response.json({ messages: [
+          { id: 1, role: "user", text: "cached question", status: "ok" },
+        ] }));
+      }
+      return Promise.resolve(new Response("nope", { status: 500 }));
+    }
+    return base(url, init);
+  }));
+  render(<Chat student={student} onChanged={() => {}} />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: /Chat A/ }));
+  await vi.waitFor(() => expect(screen.getByRole("log")).toHaveTextContent("cached question"));
+  await user.click(screen.getByRole("button", { name: /Chat A/ }));
+  await vi.waitFor(() => {
+    expect(screen.getByRole("status")).toHaveTextContent("Could not load this conversation.");
+    expect(screen.getByRole("log")).toHaveTextContent("cached question");
+    expect(screen.getByLabelText("Your message")).toBeEnabled();
+  });
+});
+
+test("a stale transcript failure does not mark the conversation now open", async () => {
+  let resolveA!: (response: Response) => void;
+  const pendingA = new Promise<Response>((resolve) => { resolveA = resolve; });
+  const base = routes({
+    "GET /api/student/conversations": () => Response.json({ conversations: [
+      { id: 9, model: "gemma", title: "Chat A" }, { id: 10, model: "gemma", title: "Chat B" },
+    ] }),
+    "GET /api/student/conversations/10": () => Response.json({ messages: [
+      { id: 11, role: "assistant", text: "Conversation B", status: "ok" },
+    ] }),
+  });
+  vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) =>
+    url === "/api/student/conversations/9" ? pendingA : base(url, init)));
+  render(<Chat student={student} onChanged={() => {}} />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: /Chat A/ }));
+  await user.click(screen.getByRole("button", { name: /Chat B/ }));
+  await vi.waitFor(() => expect(screen.getByRole("log")).toHaveTextContent("Conversation B"));
+  await act(async () => { resolveA(new Response("nope", { status: 500 })); });
+  expect(screen.getByRole("log")).toHaveTextContent("Conversation B");
+  expect(screen.getByRole("status")).not.toHaveTextContent("Could not load this conversation.");
+});
+
 test("a late transcript response cannot select an older navigation", async () => {
   let resolveA!: (response: Response) => void;
   const pendingA = new Promise<Response>((resolve) => { resolveA = resolve; });

@@ -28,6 +28,7 @@ export function Chat({ student, onChanged }: { student: Student; onChanged: () =
   const [loading, setLoading] = useState<Record<number, boolean>>({});
   const activeTurn = useRef<number | null>(null);
   const revisions = useRef<Record<number, number>>({});
+  const showing = useRef<number | null>(null);
   const messages = current ? (transcripts[current.id] ?? []) : [];
 
   function changeMessages(id: number, change: (messages: ChatMessage[]) => ChatMessage[]) {
@@ -58,6 +59,7 @@ export function Chat({ student, onChanged }: { student: Student; onChanged: () =
   async function open(convo: Conversation) {
     setNotice("");
     setCurrent(convo);
+    showing.current = convo.id;
     // The server omits pending replies. Keep the local transcript during a turn.
     if (activeTurn.current === convo.id) return;
     const revision = (revisions.current[convo.id] ?? 0) + 1;
@@ -67,6 +69,7 @@ export function Chat({ student, onChanged }: { student: Student; onChanged: () =
     // A newer load or send owns this transcript, even if it has already finished.
     if (revisions.current[convo.id] === revision) {
       if (r) changeMessages(convo.id, () => r.messages);
+      else if (showing.current === convo.id) setNotice("Could not load this conversation. Try again.");
       setLoading((all) => ({ ...all, [convo.id]: false }));
     }
   }
@@ -76,6 +79,8 @@ export function Chat({ student, onChanged }: { student: Student; onChanged: () =
     try {
       const convo = await api<Conversation>("/student/conversations", { method: "POST", body: { model } });
       setCurrent(convo);
+      showing.current = convo.id;
+      setNotice("");
       changeMessages(convo.id, () => []);
       loadConversations();
     } catch (e) {
