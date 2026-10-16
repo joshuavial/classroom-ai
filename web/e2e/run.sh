@@ -21,7 +21,7 @@ cleanup() {
 }
 trap cleanup EXIT
 docker compose down -v >/dev/null 2>&1 || true
-uv run python -m tests.fake_model_server --port "$model_port" &
+uv run python -m tests.fake_model_server --host 0.0.0.0 --port "$model_port" &
 fake_pid=$!
 docker compose up -d --build
 code=""
