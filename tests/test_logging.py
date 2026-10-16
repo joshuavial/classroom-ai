@@ -4,6 +4,7 @@ import logging
 import httpx
 import psycopg
 import pytest
+from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from app.main import JsonLines, create_app, from_env, setup_logging
@@ -120,3 +121,46 @@ def test_pool_exception_trace_and_mapping_args_stay_out_of_json(capsys, logger_n
     assert lines[0]["msg"] == "pool operation failed: OperationalError"
     assert "secret_chat" not in json.dumps(lines)
     assert "exc" not in lines[0]
+
+
+async def test_csrf_cookie_lookup_database_error_stays_out_of_logs(caplog):
+    """A database error while choosing the CSRF cookie must not log the
+    server DETAIL or the lookup query. The route's response is unchanged
+    and the cookie stays unset."""
+    secret = "DETAIL: csrf-lookup-secret-9f3a private chat text"
+
+    class Lookup:
+        async def execute(self, query, params=None):
+            raise psycopg.errors.QueryCanceled(f"{secret}\nQUERY: {query}")
+
+    class Connection:
+        async def __aenter__(self):
+            return Lookup()
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    class Pool:
+        def connection(self):
+            return Connection()
+
+    async def ok(_request):
+        return JSONResponse({"ok": True})
+
+    app = create_app("postgresql://unused")
+    app.state.pool = Pool()
+    app.router.routes.append(Route("/api/_test/csrf-lookup", ok))
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    caplog.set_level(logging.WARNING, logger="app.auth")
+    async with httpx.AsyncClient(transport=transport, base_url="https://test") as client:
+        response = await client.get("/api/_test/csrf-lookup", headers={"Cookie": "session=device-token"})
+
+    assert (response.status_code, response.json()) == (200, {"ok": True})
+    assert not [h for h in response.headers.get_list("set-cookie") if h.startswith("csrf_token=")]
+    assert "could not choose a CSRF cookie" in caplog.text
+    assert "QueryCanceled" in caplog.text
+    assert secret not in caplog.text
+    assert "QUERY:" not in caplog.text
+    assert "JOIN staff" not in caplog.text
+    assert "Traceback" not in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)

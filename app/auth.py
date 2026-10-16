@@ -342,10 +342,11 @@ class CSRFMiddleware:
                 if not sets_csrf and scope["path"] not in CSRF_EXEMPT:
                     try:
                         wanted = await self.wanted_token(request, cookie)
-                    except Exception:
+                    except Exception as exc:
                         # Database trouble: answer without fixing the cookie;
-                        # the next request will try again.
-                        log.warning("could not choose a CSRF cookie", exc_info=True)
+                        # the next request will try again. The class name is
+                        # enough: a traceback can include the server DETAIL.
+                        log.warning("could not choose a CSRF cookie: %s", type(exc).__name__)
                         wanted = None
                     if wanted is not None:
                         response = Response()
