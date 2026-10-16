@@ -3,12 +3,14 @@
 import asyncio
 import json
 import logging
+import socket
 from datetime import UTC, datetime
 
 import anyio
 import httpx
 import psycopg
 import pytest
+import uvicorn
 
 from app import chat, guard, workers
 from app.main import create_app
@@ -219,6 +221,95 @@ async def test_the_message_is_committed_before_the_worker_sees_it(setup, dsn):
     convo = await conversation(student)
     await send(student, convo, "committed?")
     assert seen == [[("user", "ok", None), ("assistant", "pending", ID["w1"])]]
+
+
+async def test_database_error_after_sse_start_stays_out_of_logs(setup, dsn, caplog):
+    """A psycopg error on the worker-id update, after the SSE response has
+    started, must not reach app logs, uvicorn logs, or the client. The lease
+    is released and the reply row is stored as an error, as it is today."""
+    secret = "DETAIL: sse-worker-id-secret-9f3a private chat text"
+    app, fake = setup
+    _, student, _, _ = await lesson(app, dsn)
+    convo = await conversation(student)
+    original = app.state.pool.connection
+
+    class Proxy:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+        async def execute(self, query, params=None, **kwargs):
+            if str(query).startswith("UPDATE messages SET worker_id"):
+                raise psycopg.errors.QueryCanceled(f"{secret}\nQUERY: {query}")
+            return await self._conn.execute(query, params, **kwargs)
+
+    class ProxyCM:
+        def __init__(self, inner):
+            self._inner = inner
+
+        async def __aenter__(self):
+            return Proxy(await self._inner.__aenter__())
+
+        async def __aexit__(self, *exc):
+            return await self._inner.__aexit__(*exc)
+
+    def connection(*args, **kwargs):
+        return ProxyCM(original(*args, **kwargs))
+
+    app.state.pool.connection = connection
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    server = uvicorn.Server(uvicorn.Config(
+        app, host="127.0.0.1", port=port, lifespan="off", access_log=False, log_level="info",
+    ))
+    task = asyncio.create_task(server.serve())
+    watched = ("uvicorn", "uvicorn.error", "app", "app.chat")
+    try:
+        for _ in range(50):
+            if server.started:
+                break
+            await asyncio.sleep(0.1)
+        else:
+            raise AssertionError("uvicorn did not start")
+        for name in watched:
+            logger = logging.getLogger(name)
+            logger.addHandler(caplog.handler)
+            logger.setLevel(logging.INFO)
+        cookie = f"session={student.cookies['session']}; csrf_token={student.cookies['csrf_token']}"
+        headers = {"X-CSRF-Token": student.cookies["csrf_token"], "Cookie": cookie}
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}", timeout=10) as client:
+            response = await client.post(
+                f"/api/student/conversations/{convo}/messages",
+                json={"text": "What is a cell?"},
+                headers=headers,
+            )
+        assert response.status_code == 200
+        client_text = response.content.decode()
+        assert response.content == b""
+    finally:
+        for name in watched:
+            logging.getLogger(name).removeHandler(caplog.handler)
+        server.should_exit = True
+        await asyncio.wait_for(task, 10)
+
+    assert app.state.router.in_flight[ID["w1"]] == 0
+    assert fake.requests == []
+    stored = rows(dsn, convo)
+    assert stored[0][0] == "user" and stored[0][2] == "ok"
+    assert stored[1][0] == "assistant" and stored[1][2] == "error"
+    assert secret not in caplog.text
+    assert secret not in client_text
+    assert "event:" not in client_text
+    assert "UPDATE messages SET worker_id" not in caplog.text
+    assert "UPDATE messages SET worker_id" not in client_text
+    assert "Traceback" not in caplog.text
+    assert "failed after the response started" in caplog.text
+    assert "QueryCanceled" in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
 
 
 async def test_worker_request_carries_no_identity(setup, dsn):
