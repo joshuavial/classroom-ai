@@ -1,16 +1,20 @@
 """Exercise the smoke launcher without starting its Docker stack."""
 import os
 from pathlib import Path
+import shutil
+import signal
 import socket
 import subprocess
 import sys
-import signal
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_smoke_backend_listens_on_all_host_interfaces(tmp_path):
+@pytest.mark.parametrize("real_uv", [False, True], ids=["observed-bind", "real-uv"])
+def test_smoke_backend_listens_on_all_host_interfaces(tmp_path, real_uv):
     with socket.socket() as port_socket:
         port_socket.bind(("0.0.0.0", 0))
         port = port_socket.getsockname()[1]
@@ -24,9 +28,14 @@ def test_smoke_backend_listens_on_all_host_interfaces(tmp_path):
     binaries = tmp_path / "bin"
     binaries.mkdir()
     uv = binaries / "uv"
-    # Observe the real socket after a successful bind, then run the unmodified
-    # fake model module. No local network permission or physical device needed.
-    uv.write_text(f"#!{sys.executable}\n" + '''import os, runpy, socket, sys
+    if real_uv:
+        executable = shutil.which("uv")
+        assert executable, "uv is required for the smoke lifecycle check"
+        uv.symlink_to(executable)
+    else:
+        # Observe the real socket after a successful bind, then run the unmodified
+        # fake model module. No local network permission or physical device needed.
+        uv.write_text(f"#!{sys.executable}\n" + '''import os, runpy, socket, sys
 from pathlib import Path
 original = socket.socket.bind
 def bind(sock, address):
@@ -40,7 +49,7 @@ assert args[0] == "-m"
 sys.argv = args[1:]
 runpy.run_module(args[1], run_name="__main__")
 ''')
-    uv.chmod(0o755)
+        uv.chmod(0o755)
     # Probe the real server after the launcher starts it, then stop before the
     # expensive stack/browser setup. This still exercises the launcher's trap.
     docker = binaries / "docker"
@@ -70,6 +79,9 @@ raise SystemExit(74)
     env = {**os.environ, "PATH": f"{binaries}{os.pathsep}{os.environ['PATH']}",
            "PYTHONPATH": str(ROOT), "FAKE_MODEL_PORT": str(port),
            "SMOKE_BIND_RESULT": str(binding), "SMOKE_PROBE_RESULT": str(marker)}
+    if real_uv:
+        # Reuse the installed project environment without syncing or fetching.
+        env.update(UV_PROJECT=str(ROOT), UV_NO_SYNC="1")
     process = subprocess.Popen(["/bin/sh", str(launcher)], env=env, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, text=True, start_new_session=True)
     try:
@@ -77,7 +89,8 @@ raise SystemExit(74)
         assert process.returncode == 74, stderr
         assert marker.exists(), f"fake model did not become ready: {stderr}"
         assert marker.read_text() == "reachable"
-        assert binding.read_text() == "0.0.0.0", "smoke model must accept container connections on every host interface"
+        if not real_uv:
+            assert binding.read_text() == "0.0.0.0", "smoke model must accept container connections on every host interface"
         # The launcher, rather than this test's fallback cleanup, stopped it.
         with socket.socket() as probe:
             probe.settimeout(0.5)
