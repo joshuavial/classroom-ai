@@ -232,3 +232,63 @@ test("a transcript loaded before a turn cannot erase the completed reply", async
   await act(async () => resolveHistory(Response.json({ messages: [] })));
   expect(screen.getByRole("log")).toHaveTextContent("A complete reply");
 });
+
+test.each(["done", "blocked", "error"])("terminal events while away stay with their conversation: %s", async (ending) => {
+  document.cookie = "csrf_token=tok";
+  const s = streamed([ev("delta", { text: "First" }), ev("delta", { text: " second" }),
+    ev(ending, ending === "done" ? { id: 12 } : { message: "Stopped." })]);
+  let loads = 0;
+  const savedReply = ending === "blocked" ? "First second\nStopped." : "First second";
+  vi.stubGlobal("fetch", routes({
+    "GET /api/student/conversations": () => Response.json({ conversations: [
+      { id: 9, model: "gemma", title: "Chat A" }, { id: 10, model: "gemma", title: "Chat B" },
+    ] }),
+    "GET /api/student/conversations/9": () => {
+      loads++;
+      if (loads === 1) return Response.json({ messages: [] });
+      if (loads === 2) return Response.json({ error: "unavailable" }, { status: 503 });
+      return Response.json({ messages: [
+        { id: 11, role: "user", text: "Question", status: "ok" },
+        { id: 12, role: "assistant", text: savedReply, status: ending === "done" ? "ok" : ending },
+      ] });
+    },
+    "GET /api/student/conversations/10": () => Response.json({ messages: [
+      { id: 21, role: "assistant", text: "Other conversation", status: "ok" },
+    ] }),
+    "POST /api/student/conversations/9/messages": () => s.response,
+  }));
+  render(<Chat student={student} onChanged={() => {}} />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: /Chat A/ }));
+  await user.type(await screen.findByLabelText("Your message"), "Question{Enter}");
+  await act(async () => s.next());
+  const log = screen.getByRole("log");
+  await vi.waitFor(() => expect(log).toHaveTextContent("First"));
+  await user.click(screen.getByRole("button", { name: /Chat B/ }));
+  await vi.waitFor(() => expect(log).toHaveTextContent("Other conversation"));
+  await act(async () => s.next());
+  expect(log).toHaveTextContent("Other conversation");
+  expect(log).not.toHaveTextContent("First");
+  await act(async () => s.next());
+  await vi.waitFor(() => expect(screen.getByLabelText("Your message")).toBeEnabled());
+  expect(log).toHaveTextContent("Other conversation");
+  expect(log).not.toHaveTextContent("First");
+  expect(log).not.toHaveTextContent("Stopped.");
+  // The first return cannot load history. It must retain the owning local turn,
+  // including terminal messages which arrived while B was still selected.
+  await user.click(screen.getByRole("button", { name: /Chat A/ }));
+  await vi.waitFor(() => expect(loads).toBe(2));
+  expect(log).toHaveTextContent("Question");
+  expect(log).toHaveTextContent("First second");
+  if (ending !== "done") expect(log).toHaveTextContent("Stopped.");
+  expect(log).not.toHaveTextContent("Other conversation");
+  // Retrying history reconciles the complete stored transcript, without duplicates.
+  await user.click(screen.getByRole("button", { name: /Chat A/ }));
+  await vi.waitFor(() => expect(screen.getByLabelText("Your message")).toBeEnabled());
+  expect(loads).toBe(3);
+  expect(within(log).getAllByText("You:", { exact: true })).toHaveLength(1);
+  const replies = within(log).getAllByText("AI:", { exact: true });
+  expect(replies).toHaveLength(1);
+  expect(replies[0].parentElement).toHaveTextContent(savedReply.replace("\n", " "));
+  if (ending === "error") expect(log).not.toHaveTextContent("Stopped.");
+});
