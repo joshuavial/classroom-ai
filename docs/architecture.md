@@ -321,7 +321,7 @@ How the live view is built (`app/live.py`, step 7):
 
 ## Operations
 
-- Logs: the app logs JSON lines to stdout. Docker keeps them. Chat text never goes to logs, only to the database.
+- Logs: the app logs JSON lines to stdout. Docker keeps them. Chat text never goes to logs, only to the database. Pool connection, check, reset, rollback and scheduled maintenance failures retain their event and exception class, but exception messages and tracebacks are removed before logging handlers can include database details or query text.
 - Health: `/healthz` reports database, guard and worker counts. The admin page shows the same. So far it reports the database: 200 `{"status":"ok","db":"ok"}`, or 503 with `"db":"down"` when the database does not answer within two seconds.
 - Telemetry: the web image sets `NEXT_TELEMETRY_DISABLED=1` for the build and at run time.
 - Upgrade: `git pull && docker compose up -d --build`, which rebuilds both the `app` and `web` images. Migrations run on start. Back up first with `pg_dump`; the docs say so.

@@ -41,6 +41,24 @@ class DropQueryStrings(logging.Filter):
         return True
 
 
+class PoolErrorDetails(logging.Filter):
+    """Keep pool failure events, but never database exception text or traces."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        def safe(value):
+            return type(value).__name__ if isinstance(value, BaseException) else value
+
+        record.msg = safe(record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(safe(value) for value in record.args)
+        elif isinstance(record.args, dict):
+            record.args = {key: safe(value) for key, value in record.args.items()}
+        record.exc_info = None
+        record.exc_text = None
+        record.stack_info = None
+        return True
+
+
 def setup_logging() -> None:
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(JsonLines())
@@ -52,6 +70,11 @@ def setup_logging() -> None:
         logger.handlers = [handler]
         logger.propagate = False
     logging.getLogger("uvicorn.access").addFilter(DropQueryStrings())
+    # The pool and its maintenance schedulers use separate logger names.
+    for name in ("psycopg.pool", "psycopg_pool.sched", "psycopg_pool.sched_async"):
+        pool_logger = logging.getLogger(name)
+        if not any(isinstance(f, PoolErrorDetails) for f in pool_logger.filters):
+            pool_logger.addFilter(PoolErrorDetails())
 
 
 async def healthz(request: Request) -> JSONResponse:
