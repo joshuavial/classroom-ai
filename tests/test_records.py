@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 
 import psycopg
@@ -190,6 +191,46 @@ async def test_retention_loop_runs_now_then_hourly_and_survives_errors(pool, mon
     assert runs == [NOW, NOW + timedelta(hours=1), NOW + timedelta(hours=2)]
     assert sleeps == [3600, 3600, 3600]
     assert "retention failed" in caplog.text
+
+
+async def test_retention_loop_logs_the_exception_class_only(caplog):
+    """A database error during retention must not log the server DETAIL or
+    the query. The loop still waits the hour before the next run."""
+    secret = "DETAIL: retention-loop-secret-9f3a private chat text"
+
+    class Failing:
+        def connection(self):
+            return self
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        def transaction(self):
+            return self
+
+        async def execute(self, query, params=None):
+            raise psycopg.errors.QueryCanceled(f"{secret}\nQUERY: {query}")
+
+    sleeps = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+        raise asyncio.CancelledError
+
+    caplog.set_level(logging.ERROR, logger="app.records")
+    with pytest.raises(asyncio.CancelledError):
+        await records.retention_loop(Failing(), lambda: NOW, sleep=fake_sleep)
+
+    assert sleeps == [records.RETENTION_EVERY_SECONDS]
+    assert "retention failed" in caplog.text
+    assert "QueryCanceled" in caplog.text
+    assert secret not in caplog.text
+    assert "SET LOCAL lock_timeout" not in caplog.text
+    assert "Traceback" not in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
 
 
 async def test_retention_log_has_counts_not_content(pool, caplog):

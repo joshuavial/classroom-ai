@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 
 import psycopg
 import pytest
@@ -173,6 +174,37 @@ async def test_sse_endpoint_refuses_others(app, teacher, dsn):
         assert (await other.get(f"/api/sessions/{session_id}/events")).status_code == 404
     student, _ = await join(app, roster[0]["code"], "Aroha")
     assert (await student.get(f"/api/sessions/{session_id}/events")).status_code == 401
+
+
+async def test_listener_reconnect_logs_the_exception_class_only(caplog, monkeypatch):
+    """A database error on the LISTEN connection must not log the server
+    DETAIL or the query. The hub still tells clients to resync and tries again."""
+    secret = "DETAIL: live-listener-secret-9f3a private chat text"
+    query = "LISTEN classroom_live_query_marker"
+    calls = 0
+
+    async def connect(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise psycopg.errors.OperationalError(f"{secret}\nQUERY: {query}")
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(live.psycopg.AsyncConnection, "connect", connect)
+    hub = live.Hub("postgresql://unused", retry_seconds=0)
+    queue = hub.subscribe(7)
+    caplog.set_level(logging.WARNING, logger="app.live")
+    with pytest.raises(asyncio.CancelledError):
+        await hub.run()
+
+    assert calls == 2
+    assert queue.get_nowait() == live.RESYNC
+    assert "live connection lost; reconnecting" in caplog.text
+    assert "OperationalError" in caplog.text
+    assert secret not in caplog.text
+    assert query not in caplog.text
+    assert "Traceback" not in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
 
 
 async def test_a_non_object_payload_is_ignored_without_a_reconnect(dsn):

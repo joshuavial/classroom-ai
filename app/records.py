@@ -149,8 +149,9 @@ async def retention_loop(
     while True:
         try:
             await run_retention(pool, clock())
-        except Exception:
-            log.exception("retention failed")
+        except Exception as exc:
+            # Class name only: a psycopg traceback can include DETAIL.
+            log.error("retention failed: %s", type(exc).__name__)
         await sleep(RETENTION_EVERY_SECONDS)
 
 

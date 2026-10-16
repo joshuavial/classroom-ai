@@ -112,8 +112,9 @@ class Hub:
                             log.warning("ignored a malformed live event")
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                log.warning("live connection lost; reconnecting", exc_info=True)
+            except Exception as exc:
+                # Class name only: a psycopg traceback can include DETAIL.
+                log.warning("live connection lost; reconnecting: %s", type(exc).__name__)
             self.connected.clear()
             # Anything published while we were away is lost: tell clients.
             self.resync_all()
