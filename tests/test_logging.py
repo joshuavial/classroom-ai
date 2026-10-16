@@ -164,3 +164,112 @@ async def test_csrf_cookie_lookup_database_error_stays_out_of_logs(caplog):
     assert "JOIN staff" not in caplog.text
     assert "Traceback" not in caplog.text
     assert all(record.exc_info is None for record in caplog.records)
+
+
+async def test_driver_async_rollback_error_keeps_only_the_exception_class(capsys):
+    secret = "DETAIL: rollback-secret-9f3a private chat text"
+
+    class Conn:
+        closed = False
+        _pool = object()
+
+        async def rollback(self):
+            raise psycopg.OperationalError(secret)
+
+    setup_logging()
+    await psycopg.AsyncConnection.__aexit__(Conn(), RuntimeError, RuntimeError("turn failed"), None)
+    output = capsys.readouterr().out
+    assert "error ignored in rollback" in output
+    assert secret not in output
+    assert "Traceback" not in output
+    assert "OperationalError" in output
+
+
+def test_driver_sync_rollback_error_keeps_only_the_exception_class(capsys):
+    secret = "DETAIL: sync-rollback-secret-9f3a private chat text"
+
+    class Conn:
+        closed = False
+        _pool = object()
+
+        def rollback(self):
+            raise psycopg.OperationalError(secret)
+
+    setup_logging()
+    psycopg.Connection.__exit__(Conn(), RuntimeError, RuntimeError("turn failed"), None)
+    output = capsys.readouterr().out
+    assert "error ignored in rollback" in output
+    assert secret not in output
+    assert "Traceback" not in output
+    assert "OperationalError" in output
+
+
+async def test_driver_query_cancellation_error_keeps_only_the_exception_class(capsys):
+    secret = "DETAIL: cancel-secret-9f3a QUERY: SELECT private_chat FROM messages"
+
+    class Conn:
+        async def cancel_safe(self, timeout):
+            raise psycopg.OperationalError(secret)
+
+    setup_logging()
+    await psycopg.AsyncConnection._try_cancel(Conn(), timeout=0.1)
+    output = capsys.readouterr().out
+    assert "query cancellation failed" in output
+    assert secret not in output and "private_chat" not in output
+    assert "OperationalError" in output
+
+
+def test_driver_transaction_rollback_error_keeps_only_the_exception_class(capsys):
+    from psycopg.transaction import Transaction
+
+    secret = "DETAIL: tx-rollback-secret-9f3a private chat text"
+
+    def boom(_exc):
+        raise psycopg.errors.QueryCanceled(secret)
+        yield
+
+    setup_logging()
+    gen = Transaction._exit_gen(type("Tx", (), {"_rollback_gen": staticmethod(boom)})(),
+                                RuntimeError, RuntimeError("block"), None)
+    with pytest.raises(StopIteration) as stop:
+        next(gen)
+    assert stop.value.value is False
+    output = capsys.readouterr().out
+    assert "error ignored in rollback" in output
+    assert secret not in output
+    assert "QueryCanceled" in output
+
+
+def test_driver_notice_callback_error_keeps_only_the_exception_class(dsn, capsys):
+    secret = "DETAIL: notice-secret-9f3a private chat text"
+
+    def boom(_diag):
+        raise RuntimeError(secret)
+
+    setup_logging()
+    with psycopg.connect(dsn) as conn:
+        conn.add_notice_handler(boom)
+        conn.execute("DO $$ BEGIN RAISE WARNING 'notice-marker'; END $$")
+    output = capsys.readouterr().out
+    assert "error processing notice callback" in output
+    assert "RuntimeError" in output
+    assert secret not in output
+    assert "Traceback" not in output
+
+
+@pytest.mark.parametrize("logger_name", ["psycopg", "psycopg.transaction", "psycopg.waiting"])
+def test_driver_exception_trace_and_mapping_args_stay_out_of_json(capsys, logger_name):
+    setup_logging()
+    error = psycopg.OperationalError("DETAIL: secret_chat in query")
+    logger = logging.getLogger(logger_name)
+    filters = len(logger.filters)
+    setup_logging()
+    assert len(logger.filters) == filters
+    logger.warning("driver operation failed: %(error)s", {"error": error},
+                   exc_info=(type(error), error, None), stack_info=True)
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert len(lines) == 1
+    assert lines[0]["level"] == "WARNING"
+    assert "secret_chat" not in json.dumps(lines)
+    assert "exc" not in lines[0]
+    assert lines[0]["msg"] == "driver operation failed: OperationalError"
