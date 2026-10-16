@@ -190,8 +190,11 @@ async def admit(request: Request, student: dict, conversation_id: int, text: str
 
 
 async def store_verdict(conn, message_id: int, verdict: guard.Verdict, status: str) -> None:
-    await conn.execute(
-        "UPDATE messages SET status = %s, verdict = %s WHERE id = %s", (status, Jsonb(verdict.to_json()), message_id))
+    cur = await conn.execute(
+        "UPDATE messages SET status = %s, verdict = %s WHERE id = %s AND status = 'pending'",
+        (status, Jsonb(verdict.to_json()), message_id))
+    if cur.rowcount != 1:
+        raise HTTPError(503, "chat_unavailable")
     await store_flags(conn, message_id, [verdict])
 
 

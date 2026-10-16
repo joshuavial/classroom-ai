@@ -515,6 +515,43 @@ async def test_a_pending_prompt_never_appears_in_another_turns_history(setup, ds
     await turn_a
 
 
+@pytest.mark.parametrize("verdict", [guard.Verdict(), guard.Verdict("block_flag", ("Violent",), "Stopped")])
+async def test_late_guard_verdict_cannot_revive_a_swept_prompt(setup, dsn, monkeypatch, verdict):
+    app, fake = setup
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def delayed(app_, ctx):
+        entered.set()
+        await release.wait()
+        return verdict
+
+    monkeypatch.setattr(guard, "check_prompt", delayed)
+    _, student, _, _ = await lesson(app, dsn, limit=1)
+    convo = await conversation(student)
+    turn = asyncio.create_task(send(student, convo, "slow guard"))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        with psycopg.connect(dsn) as conn:
+            conn.execute("UPDATE messages SET created_at = now() - interval '3 minutes'"
+                         " WHERE conversation_id = %s", (convo,))
+        # This endpoint performs the real admission sweep and commits it.
+        assert (await student.get("/api/student/me")).json()["student"]["messages_used"] == 0
+        assert rows(dsn, convo)[0][2] == "error"
+    finally:
+        release.set()
+        response = await asyncio.wait_for(turn, 5)
+    assert response.status_code == 503
+    assert response.json() == {"error": "chat_unavailable"}
+    assert len(rows(dsn, convo)) == 1
+    assert rows(dsn, convo)[0][2] == "error"
+    assert not fake.requests
+    with psycopg.connect(dsn) as conn:
+        assert conn.execute("SELECT verdict FROM messages WHERE conversation_id = %s", (convo,)).fetchone() == (None,)
+        assert conn.execute("SELECT count(*) FROM flags f JOIN messages m ON m.id = f.message_id"
+                            " WHERE m.conversation_id = %s", (convo,)).fetchone() == (0,)
+    assert (await student.get("/api/student/me")).json()["student"]["messages_used"] == 0
+
+
 async def test_a_stale_pending_row_stops_counting(setup, dsn):
     app, fake = setup
     _, student, _, _ = await lesson(app, dsn, limit=1)
