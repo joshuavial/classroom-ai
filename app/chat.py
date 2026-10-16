@@ -23,7 +23,6 @@ import os
 
 import anyio
 import httpx
-import psycopg
 from psycopg.types.json import Jsonb
 from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
@@ -439,9 +438,10 @@ async def reply(app, pool, ctx: guard.Context, student: dict, lesson_id: int, mo
         # was generated, marked as an error, unless it was already stored.
         if not stored:
             await store("error")
-        if isinstance(exc, psycopg.Error):
+        if isinstance(exc, Exception):
             # The response has started, so a re-raise is logged with its
-            # traceback. The class name is enough.
+            # traceback. The class name is enough. Cancellation is not an
+            # Exception and still propagates.
             log.error("reply %s failed after the response started: %s", reply_id, type(exc).__name__)
             return
         raise
