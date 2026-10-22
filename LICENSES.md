@@ -47,7 +47,7 @@ The NVIDIA driver for Windows is proprietary. It is the GPU vendor's driver, whi
 
 | Component | Version | Licence |
 | --- | --- | --- |
-| uv | 0.12.13 | MIT or Apache-2.0 |
+| uv | 0.13.4 | MIT or Apache-2.0 |
 | pytest | 9.1.1 | MIT |
 | pytest-asyncio | 1.4.0 | Apache-2.0 |
 | TypeScript | 7.0.2 | Apache-2.0 |
