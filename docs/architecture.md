@@ -59,7 +59,7 @@ Two compose files, one per machine role. Both build from this repository, so ins
 
 Versions at time of writing: Python 3.14.8, Starlette 1.7.0, uvicorn 0.54.0, httpx 0.28.1, psycopg 3.3.6, psycopg-pool 3.3.3, PostgreSQL 18.6, Caddy 2.11.7, llama.cpp build b11434 (recipe and guard; b11433 has no published image), Node.js 24.21.0, uv 0.13.4 (build tool in the app image, pinned by index digest; its bundled trust roots reject the eMudhra chains that 0.12.13 accepted), Next.js 16.4.0, React 19.3.0, TypeScript 7.0.2, Vitest 5.0.3, Playwright 1.63.0. Node.js 26 enters LTS on 2026-10-28; move to it in a release after that. Pinned versions go in `pyproject.toml`, `web/package.json` with its lockfile, `compose.yml` (images pinned by tag and digest) and the worker recipes. Upgrading means changing those pins in a release.
 
-Five runtime Python dependencies: starlette, uvicorn, httpx, psycopg (with its binary wheel, which bundles libpq) and psycopg-pool. Tests add pytest 9.1.1 and pytest-asyncio 1.4.0. `uv` (0.12.13 in the app image) installs them from `uv.lock`.
+Five runtime Python dependencies: starlette, uvicorn, httpx, psycopg (with its binary wheel, which bundles libpq) and psycopg-pool. Tests add pytest 9.1.1 and pytest-asyncio 1.4.0. `uv` (0.13.4 in the app image) installs them from `uv.lock`.
 
 Three runtime Node dependencies for `web`: next, react, react-dom. Development adds TypeScript, Vitest, Testing Library and Playwright.
 
