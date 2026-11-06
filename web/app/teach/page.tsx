@@ -7,6 +7,7 @@ import type { ClassInfo } from "@/lib/types";
 import { ServerDown } from "@/app/server-down";
 import { Lesson } from "@/app/teach/lesson";
 import Models from "@/components/Models";
+import GuardHealth from "@/components/GuardHealth";
 import forms from "@/app/forms.module.css";
 import styles from "@/app/teach/teach.module.css";
 
@@ -168,6 +169,7 @@ export default function TeachPage() {
   return (
     <main className={styles.wide}>
       <h1>Teacher</h1>
+      <GuardHealth />
       <p>
         Signed in as {state.staff.username}. <button type="button" onClick={signOut}>Sign out</button>
       </p>

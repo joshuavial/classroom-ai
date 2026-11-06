@@ -297,7 +297,7 @@ How the live view is built (`app/live.py`, step 7):
 | --- | --- |
 | No live worker for a model | Student sees "this model isn't available right now". Admin console shows the worker down. |
 | Worker drops mid-reply | Partial reply stored and marked as an error. Student sees what was shown plus a retry message. |
-| Guard container down | Fail closed. Students see "chat is unavailable", and the admin console shows a warning banner. No unchecked text goes either way. |
+| Guard container down | Fail closed. Students see "chat is unavailable", and the teacher and admin consoles show a warning banner. No unchecked text goes either way. |
 | Database write fails | The turn is refused. Nothing is sent to a model that isn't stored. |
 | Database down | Fail closed. Turns are refused, students see "chat is unavailable", and `/healthz` reports the database down. The app reconnects when it is back. |
 | Server restarts | Students and teachers stay signed in (cookies are in the database). Open SSE streams reconnect. |
@@ -324,7 +324,7 @@ How the live view is built (`app/live.py`, step 7):
 ## Operations
 
 - Logs: the app logs JSON lines to stdout. Docker keeps them. Chat text never goes to logs, only to the database. Pool connection, check, reset, rollback and scheduled maintenance failures retain their event and exception class, but exception messages and tracebacks are removed before logging handlers can include database details or query text. The psycopg, psycopg.transaction, and psycopg.waiting loggers do the same for driver rollback, query cancellation, notice callbacks, pipeline exit, and waiting errors. The psycopg logger stays at WARNING. A debug line that has already turned the error into a string would still contain that text, so the level is not lowered. PSYCOPG_DEBUG stays unset, because that switch logs libpq calls, including query text.
-- Health: `/healthz` reports database and guard health: 200 `{"status":"ok","db":"ok","guard":"ok"}` when both answer within two seconds, or 503 with `"db":"down"` and/or `"guard":"down"` when either service fails. The admin page polls `/healthz` and warns if the guard is down.
+- Health: `/healthz` reports database and guard health: 200 `{"status":"ok","db":"ok","guard":"ok"}` when both answer within two seconds, or 503 with `"db":"down"` and/or `"guard":"down"` when either service fails. The admin and teacher pages poll `/healthz` and warn if the guard is down.
 - Telemetry: the web image sets `NEXT_TELEMETRY_DISABLED=1` for the build and at run time.
 - Upgrade: `git pull && docker compose up -d --build`, which rebuilds both the `app` and `web` images. Migrations run on start. Back up first with `pg_dump`; the docs say so.
 - Postgres major upgrades are a dump and restore into the new version, done in a release with its own instructions.

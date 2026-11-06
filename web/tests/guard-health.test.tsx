@@ -1,10 +1,13 @@
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import GuardHealth from "@/components/GuardHealth";
+import TeachPage from "@/app/teach/page";
+import { mockApi } from "./fetch";
 
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  document.cookie = "csrf_token=; expires=Thu, 01 Jan 1970 00:00:00 GMT";
 });
 
 test("warns when the guard is unavailable", async () => {
@@ -49,4 +52,16 @@ test("clears an outage warning after the guard recovers", async () => {
     await Promise.resolve();
   });
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+test("teacher console mounts GuardHealth alert banner when guard is down", async () => {
+  document.cookie = "csrf_token=tok";
+  mockApi({
+    "GET /models": { body: { models: [] } },
+    "GET /me": { body: { staff: { username: "teacher1", role: "teacher" } } },
+    "GET /classes": { body: { classes: [] } },
+    "GET /healthz": { status: 503, body: { status: "down", db: "ok", guard: "down" } },
+  });
+  render(<TeachPage />);
+  expect(await screen.findByRole("alert")).toHaveTextContent("Student chat is blocked");
 });
