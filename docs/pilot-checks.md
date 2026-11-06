@@ -24,11 +24,8 @@ on the same LAN. Record the Mac LAN IP and the Docker Compose project name.
 1. On the server Mac, run:
 
    ```sh
-   GUARD_DISABLED=1 BIND_ADDRESS=0.0.0.0 HTTP_PORT=8080 docker compose up -d --build
+   BIND_ADDRESS=0.0.0.0 HTTP_PORT=8080 docker compose up -d --build
    ```
-
-   `GUARD_DISABLED=1` disables safety checks. Use this only for the isolated
-   pilot check, and do not leave this stack running after the test.
 
    Run `docker compose ls` and record the project name shown for this stack.
 

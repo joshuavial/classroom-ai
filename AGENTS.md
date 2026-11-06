@@ -19,8 +19,7 @@ uv run pytest                    # app tests; starts one postgres:18.6 container
 (cd web && PLAYWRIGHT_BROWSERS_PATH=0 npx playwright install chromium && npm run e2e)  # browser smoke on a fresh stack
 ./scripts/init-env.sh            # once: writes .env with generated database credentials
 docker compose up -d --build     # server stack on http://localhost (127.0.0.1 only; HTTP_PORT=8080 for another port)
-curl localhost/healthz           # {"status":"ok","db":"ok"}
-GUARD_DISABLED=1 docker compose up -d   # manual chat check only, until the guard (step 6) is in
+curl localhost/healthz           # {"status":"ok","db":"ok","guard":"ok"}
 docker compose down              # add -v to drop the database volume too
 ```
 

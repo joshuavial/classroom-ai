@@ -23,13 +23,64 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: ${DATABASE_URL:?run scripts/init-env.sh first}
-      # Only for the step 4 manual run; chat fails closed without it until
-      # the guard (step 6) is in.
-      GUARD_DISABLED: ${GUARD_DISABLED:-0}
+      GUARD_URL: http://guard:8080
     networks: [edge, internal]
     depends_on:
       db:
         condition: service_healthy
+
+  guard-model-download:
+    image: curlimages/curl:8.10.1@sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b
+    restart: "no"
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        file=/models/Qwen3Guard-Gen-0.6B.Q8_0.gguf
+        hash=127e8833aa16c6839613cd08df5409440302e8c61e90617914b3100f2141411a
+        if [ -f "$$file" ] && echo "$$hash  $$file" | sha256sum -c -; then exit 0; fi
+        curl --fail --location --retry 3 --output "$$file.tmp" https://huggingface.co/mradermacher/Qwen3Guard-Gen-0.6B-GGUF/resolve/2a59799e089fba3807d534a89c6b95bdf38ee76a/Qwen3Guard-Gen-0.6B.Q8_0.gguf
+        echo "$$hash  $$file.tmp" | sha256sum -c -
+        mv -f "$$file.tmp" "$$file"
+    volumes:
+      - guard_models:/models
+    networks: [model-download]
+
+  guard:
+    image: ghcr.io/ggml-org/llama.cpp:server-b11434@sha256:af8c29600d1de84945de13fa7f126d06fdae16c4b19dc7db1c69c74287eae257
+    restart: unless-stopped
+    depends_on:
+      guard-model-download:
+        condition: service_completed_successfully
+    command:
+      - -lv
+      - "4"
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --model
+      - /models/Qwen3Guard-Gen-0.6B.Q8_0.gguf
+      - --alias
+      - qwen3guard-0.6b
+      - --threads
+      - "8"
+      - --parallel
+      - "30"
+      - --kv-unified-per-slot
+      - "4096"
+      - --cache-type-k
+      - f16
+      - --cache-type-v
+      - f16
+      - --n-gpu-layers
+      - "0"
+      - --jinja
+      - --no-prefill-assistant
+    volumes:
+      - guard_models:/models:ro
+    networks: [internal]
 
   web:
     build: web
@@ -58,7 +109,9 @@ networks:
   edge: {}
   internal:
     internal: true
+  model-download: {}
 
 volumes:
   pgdata: {}
   caddy_data: {}
+  guard_models: {}

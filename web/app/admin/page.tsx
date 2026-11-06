@@ -10,6 +10,7 @@ import Workers from "@/components/Workers";
 import Records from "@/components/Records";
 import GuardSettings from "@/components/GuardSettings";
 import RootCertificate from "@/components/RootCertificate";
+import GuardHealth from "@/components/GuardHealth";
 
 type StaffRow = { username: string; role: Role; created_at: string };
 
@@ -116,6 +117,7 @@ export default function AdminPage() {
   return (
     <main className={styles.page}>
       <h1>Admin</h1>
+      <GuardHealth />
       <p>
         Signed in as {state.staff.username}. <button type="button" onClick={signOut}>Sign out</button>
       </p>

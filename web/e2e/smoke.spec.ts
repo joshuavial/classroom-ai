@@ -69,12 +69,12 @@ test("a student joins and chats, and the teacher sees it live", async ({ browser
   await student.getByRole("button", { name: "New conversation" }).click();
   await student.getByLabel("Your message").fill("What is a cell?");
   await student.getByLabel("Your message").press("Enter");
-  await expect(student.getByRole("log", { name: "Conversation" })).toContainText("Cells are the units of life.", {
+  await expect(student.getByRole("log", { name: "Conversation" })).toContainText("Cells are the units. Life depends on them.", {
     timeout: 20_000,
   });
 
   // Acceptance 3: the teacher sees it within five seconds, without a reload.
-  await expect(cards.getByRole("button", { name: /Aroha/ })).toContainText("Cells are the units of life.", {
+  await expect(cards.getByRole("button", { name: /Aroha/ })).toContainText("Cells are the units. Life depends on them.", {
     timeout: 5_000,
   });
   // Deliver a real, stored server reply to the browser one SSE event at a time.
@@ -86,12 +86,18 @@ test("a student joins and chats, and the teacher sees it live", async ({ browser
       if (!String(args[0]).endsWith("/messages")) return response;
       const chunks = (await response.text()).split("\n\n").filter(Boolean);
       const encoder = new TextEncoder();
+      let closed = false;
       const stream = new ReadableStream({
         start(controller) {
-          (window as unknown as { nextChatEvent: () => void }).nextChatEvent = () => {
+          (window as unknown as { nextChatEvent: () => boolean }).nextChatEvent = () => {
+            if (closed) return false;
             const chunk = chunks.shift();
             if (chunk) controller.enqueue(encoder.encode(chunk + "\n\n"));
-            if (!chunks.length) controller.close();
+            if (!chunks.length) {
+              closed = true;
+              try { controller.close(); } catch {}
+            }
+            return true;
           };
         },
       });
@@ -101,7 +107,7 @@ test("a student joins and chats, and the teacher sees it live", async ({ browser
   await student.getByLabel("Your message").fill("Tell me more about cells");
   await student.getByLabel("Your message").press("Enter");
   await student.waitForFunction(() => typeof (window as unknown as { nextChatEvent?: unknown }).nextChatEvent === "function");
-  const nextEvent = () => student.evaluate(() => (window as unknown as { nextChatEvent: () => void }).nextChatEvent());
+  const nextEvent = () => student.evaluate(() => (window as unknown as { nextChatEvent: () => boolean }).nextChatEvent());
   await nextEvent();
   const transcript = student.getByRole("log", { name: "Conversation" });
   await expect(transcript).toContainText("Tell me more about cells");
@@ -112,13 +118,13 @@ test("a student joins and chats, and the teacher sees it live", async ({ browser
   await student.getByRole("button", { name: /What is a cell/ }).click();
   await expect(transcript).toContainText("Tell me more about cells");
   await expect(transcript.locator("p").last()).toContainText("Cells are");
-  // Four more deltas and the done event finish the six-piece fake reply.
-  for (let i = 0; i < 5; i++) await nextEvent();
+  // Remaining deltas and the done event finish the reply.
+  while (await nextEvent()) {}
   await expect(student.getByLabel("Your message")).toBeEnabled();
-  await expect(transcript.locator("p").last()).toHaveText("AI: Cells are the units of life.");
+  await expect(transcript.locator("p").last()).toHaveText("AI: Cells are the units. Life depends on them.");
   // Reload from storage to prove navigation did not alter the persisted reply.
   await student.reload();
   await student.getByRole("button", { name: /What is a cell/ }).click();
-  await expect(student.getByRole("log").locator("p").last()).toHaveText("AI: Cells are the units of life.");
+  await expect(student.getByRole("log").locator("p").last()).toHaveText("AI: Cells are the units. Life depends on them.");
   if (process.env.E2E_SCREENSHOT) await teacher.screenshot({ path: process.env.E2E_SCREENSHOT, fullPage: true });
 });

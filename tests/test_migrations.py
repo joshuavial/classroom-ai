@@ -1,10 +1,11 @@
 import asyncio
+import json
 import shutil
 
 import psycopg
 import pytest
 
-from app import db
+from app import db, guard
 
 ALL = [v for v, _ in db.load_migrations()]
 LAST = ALL[-1]
@@ -55,10 +56,13 @@ async def test_already_migrated_database_is_left_alone(empty_dsn):
 async def test_guard_migration_preserves_existing_messages_and_settings(empty_dsn, schema_copy):
     guard_migration = schema_copy / "005_guard_evidence.sql"
     chat_migration = schema_copy / "006_chat.sql"
+    categories_migration = schema_copy / "007_guard_categories.sql"
     held_guard = guard_migration.read_text()
     held_chat = chat_migration.read_text()
+    held_categories = categories_migration.read_text()
     guard_migration.unlink()
     chat_migration.unlink()
+    categories_migration.unlink()
     assert await run(empty_dsn, schema_copy) == [1, 2, 3, 4]
     with psycopg.connect(empty_dsn) as conn:
         staff = conn.execute(
@@ -80,7 +84,14 @@ async def test_guard_migration_preserves_existing_messages_and_settings(empty_ds
             "INSERT INTO messages (conversation_id, role, text, status) VALUES (%s, 'user', 'old', 'ok') RETURNING id",
             (conversation,),
         ).fetchone()[0]
-        conn.execute("INSERT INTO settings (key, value) VALUES ('guard_categories', '{\"existing\":true}')")
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('guard_categories', %s)",
+            (json.dumps({
+                "version": 1,
+                "categories": {"Violent": {"enabled": False, "action": "allow_flag", "message": "Custom"}},
+                "uncategorized": {"action": "block", "message": "Custom uncategorized"},
+            }),),
+        )
     guard_migration.write_text(held_guard)
     assert await run(empty_dsn, schema_copy) == [5]
     with psycopg.connect(empty_dsn) as conn:
@@ -89,10 +100,60 @@ async def test_guard_migration_preserves_existing_messages_and_settings(empty_ds
             None,
         )
         assert conn.execute("SELECT value FROM settings WHERE key = 'guard_categories'").fetchone()[0] == {
-            "existing": True
+            "version": 1,
+            "categories": {"Violent": {"enabled": False, "action": "allow_flag", "message": "Custom"}},
+            "uncategorized": {"action": "block", "message": "Custom uncategorized"},
         }
     chat_migration.write_text(held_chat)
     assert await run(empty_dsn, schema_copy) == [6]
+    categories_migration.write_text(held_categories)
+    assert await run(empty_dsn, schema_copy) == [7]
+    with psycopg.connect(empty_dsn) as conn:
+        value = conn.execute("SELECT value FROM settings WHERE key = 'guard_categories'").fetchone()[0]
+        assert value["uncategorized"] == {"action": "block", "message": "Custom uncategorized"}
+        assert value["categories"]["Violent"] == {"enabled": False, "action": "allow_flag", "message": "Custom"}
+        assert set(value["categories"]) == set(guard.PUBLISHED_CATEGORIES)
+        assert value["categories"]["Jailbreak"] == {
+            "enabled": True,
+            "action": "block_flag",
+            "message": "This message needs a teacher to check it before chat can continue.",
+        }
+        assert guard.resolve_actions(True, (), value, guard.PUBLISHED_CATEGORIES) == ()
+
+
+async def test_guard_migration_seeds_categories_when_uncategorized_was_customized(empty_dsn, schema_copy):
+    categories_migration = schema_copy / "007_guard_categories.sql"
+    held_categories = categories_migration.read_text()
+    categories_migration.unlink()
+    assert await run(empty_dsn, schema_copy) == [1, 2, 3, 4, 5, 6]
+    with psycopg.connect(empty_dsn) as conn:
+        conn.execute(
+            "UPDATE settings SET value = %s WHERE key = 'guard_categories'",
+            (json.dumps({
+                "version": 1,
+                "categories": {},
+                "uncategorized": {"action": "block_flag", "message": "Please ask your teacher."},
+            }),),
+        )
+    categories_migration.write_text(held_categories)
+    assert await run(empty_dsn, schema_copy) == [7]
+    with psycopg.connect(empty_dsn) as conn:
+        value = conn.execute("SELECT value FROM settings WHERE key = 'guard_categories'").fetchone()[0]
+    assert value["uncategorized"] == {"action": "block_flag", "message": "Please ask your teacher."}
+    assert set(value["categories"]) == set(guard.PUBLISHED_CATEGORIES)
+    assert all(row["enabled"] and row["action"] == "block_flag" for row in value["categories"].values())
+    resolutions = guard.resolve_actions(True, (), value, guard.PUBLISHED_CATEGORIES)
+    assert resolutions == ()
+
+
+async def test_selected_guard_categories_are_seeded_exactly(empty_dsn):
+    await run(empty_dsn)
+    with psycopg.connect(empty_dsn) as conn:
+        value = conn.execute(
+            "SELECT value FROM settings WHERE key = 'guard_categories'"
+        ).fetchone()[0]
+    assert set(value["categories"]) == set(guard.PUBLISHED_CATEGORIES)
+    assert all(row["enabled"] and row["action"] == "block_flag" for row in value["categories"].values())
 
 
 async def test_concurrent_startup_applies_once(empty_dsn):

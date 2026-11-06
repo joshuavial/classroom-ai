@@ -60,7 +60,7 @@ def validate_document(value: object) -> dict:
     for display, record in categories.items():
         if not isinstance(display, str) or display != display.strip() or not 1 <= len(display) <= MAX_CATEGORY_LENGTH:
             raise InvalidGuardSettings("invalid category name")
-        if any(unicodedata.category(char) == "Cc" for char in display):
+        if any(unicodedata.category(char) in {"Cc", "Cf"} for char in display):
             raise InvalidGuardSettings("invalid category name")
         match = normalized_name(display)
         if not match or match == "uncategorized" or match in seen:

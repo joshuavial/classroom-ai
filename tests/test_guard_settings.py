@@ -33,6 +33,7 @@ def document():
         lambda d: d["categories"].update({"Ｖｉｏｌｅｎｔ": d["categories"]["Violent"]}),
         lambda d: d["categories"].update({"Uncategorized": d["categories"]["Violent"]}),
         lambda d: d["categories"].update({"Bad\nName": d["categories"]["Violent"]}),
+        lambda d: d["categories"].update({"Bad\u200bName": d["categories"]["Violent"]}),
         lambda d: d["categories"]["Violent"].update(enabled=1),
         lambda d: d["categories"]["Violent"].update(action="ignore"),
         lambda d: d["categories"]["Violent"].update(message=""),

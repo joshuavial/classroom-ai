@@ -190,22 +190,41 @@ async def admit(request: Request, student: dict, conversation_id: int, text: str
 
 
 async def store_verdict(conn, message_id: int, verdict: guard.Verdict, status: str) -> None:
-    cur = await conn.execute(
-        "UPDATE messages SET status = %s, verdict = %s WHERE id = %s AND status = 'pending'",
-        (status, Jsonb(verdict.to_json()), message_id))
-    if cur.rowcount != 1:
-        log.warning("guard verdict refused; message %s is no longer pending", message_id)
-        raise HTTPError(503, "chat_unavailable")
-    await store_flags(conn, message_id, [verdict])
+    try:
+        guard_status = ("blocked" if verdict.blocks else "passed") if verdict.has_evidence else None
+        cur = await conn.execute(
+            "UPDATE messages SET status = %s, guard_status = %s, verdict = %s WHERE id = %s AND status = 'pending'",
+            (status, guard_status, Jsonb(verdict.to_json()), message_id),
+        )
+        if cur.rowcount != 1:
+            log.warning("guard verdict refused; message %s is no longer pending", message_id)
+            raise HTTPError(503, "chat_unavailable")
+        if verdict.has_evidence:
+            await guard.store_check(conn, message_id, "prompt", 0, verdict)
+        else:
+            await store_flags(conn, message_id, [verdict])
+    except HTTPError:
+        raise
+    except guard.GuardUnavailable:
+        raise
+    except Exception:
+        raise guard.GuardUnavailable("guard result could not be stored") from None
 
 
 async def store_flags(conn, message_id: int, verdicts: list[guard.Verdict]) -> None:
     for verdict in verdicts:
-        if verdict.flags:
-            for category in verdict.categories or ("unspecified",):
+        resolutions = verdict.action_resolutions
+        if not resolutions and verdict.flags:
+            resolutions = (guard.ActionResolution("unspecified", verdict.action, verdict.message),)
+        for resolution in resolutions:
+            if resolution.flags:
                 await conn.execute(
-                    "INSERT INTO flags (message_id, category, action) VALUES (%s, %s, %s)",
-                    (message_id, category, verdict.action))
+                    "INSERT INTO flags (message_id, category, action)"
+                    " SELECT %s, %s, %s WHERE NOT EXISTS ("
+                    " SELECT 1 FROM flags WHERE message_id = %s AND category = %s AND action = %s)",
+                    (message_id, resolution.category, resolution.action,
+                     message_id, resolution.category, resolution.action),
+                )
 
 
 async def history(conn, conversation_id: int, instructions: str) -> list[dict]:
@@ -282,17 +301,22 @@ async def send_message(request: Request):
     with anyio.CancelScope(shield=True):
         try:
             verdict = await guard.check_prompt(app, ctx)
+            status = "blocked" if verdict.blocks else "ok"
+            async with pool.connection() as conn, conn.transaction():
+                await store_verdict(conn, message_id, verdict, status)
+                await publish(conn, lesson_id, "message", student=student["id"], message=message_id)
+                body = {
+                    "model": model,
+                    "stream": True,
+                    "messages": await history(conn, conversation_id, instructions),
+                }
         except guard.GuardUnavailable:
             async with pool.connection() as conn, conn.transaction():
-                await conn.execute("UPDATE messages SET status = 'error' WHERE id = %s", (message_id,))
+                await conn.execute(
+                    "UPDATE messages SET status = 'error', guard_status = 'error' WHERE id = %s", (message_id,))
                 await publish(conn, lesson_id, "message", student=student["id"], message=message_id)
             log.warning("guard unavailable; message %s refused", message_id)
             raise HTTPError(503, "chat_unavailable") from None
-        status = "blocked" if verdict.blocks else "ok"
-        async with pool.connection() as conn, conn.transaction():
-            await store_verdict(conn, message_id, verdict, status)
-            await publish(conn, lesson_id, "message", student=student["id"], message=message_id)
-            body = {"model": model, "stream": True, "messages": await history(conn, conversation_id, instructions)}
     if verdict.blocks:
         return JSONResponse({"blocked": verdict.message})
 
@@ -347,20 +371,29 @@ async def reply(app, pool, ctx: guard.Context, student: dict, lesson_id: int, mo
     tried: set[str] = set()
     outcome = ("error", None)  # (status, event to send) if nothing better happens
     stored = False
+    guard_failed = False
 
     async def store(status: str) -> bool:
         verdicts = gate.verdicts if gate else []
         deciding = next((v for v in reversed(verdicts) if v.blocks), verdicts[-1] if verdicts else None)
+        guard_status = None
+        if guard_failed:
+            guard_status = "error"
+        elif status == "blocked" and gate and gate.sequence:
+            guard_status = "blocked"
+        elif gate and gate.active and (gate.sequence or (status == "ok" and gate.completed)):
+            guard_status = "passed"
         with anyio.CancelScope(shield=True):
             try:
                 async with pool.connection() as conn, conn.transaction():
                     await conn.execute(
                         "UPDATE messages SET text = %s, status = %s, shown_length = %s, worker_id = %s,"
-                        " verdict = %s WHERE id = %s",
+                        " verdict = %s, guard_status = %s WHERE id = %s",
                         ("".join(generated), status, len("".join(released)), worker_id,
-                         Jsonb(deciding.to_json()) if deciding else None, reply_id),
+                         Jsonb(deciding.to_json()) if deciding else None, guard_status, reply_id),
                     )
-                    await store_flags(conn, reply_id, verdicts)
+                    legacy = [verdict for verdict in verdicts if not verdict.has_evidence]
+                    await store_flags(conn, reply_id, legacy)
                     await publish(conn, lesson_id, "message", student=student["id"], message=reply_id)
                 return True
             except Exception as exc:
@@ -386,6 +419,7 @@ async def reply(app, pool, ctx: guard.Context, student: dict, lesson_id: int, mo
                         (worker_id, reply_id),
                     )
                 gate = guard.reply_gate(app, ctx)
+                gate.bind(reply_id)
                 generated, released = [], []
                 stream = stream_from(app, worker, body, gate, generated)
                 try:
@@ -418,6 +452,7 @@ async def reply(app, pool, ctx: guard.Context, student: dict, lesson_id: int, mo
                     break
                 except guard.GuardUnavailable:
                     log.warning("guard unavailable during reply %s", reply_id)
+                    guard_failed = True
                     outcome = ("error", ("error", {"message": UNAVAILABLE}))
                     break
                 outcome = ("ok", ("done", {"id": reply_id}))

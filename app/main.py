@@ -81,9 +81,16 @@ def setup_logging() -> None:
 
 
 async def healthz(request: Request) -> JSONResponse:
-    if await db.check(request.app.state.pool):
-        return JSONResponse({"status": "ok", "db": "ok"})
-    return JSONResponse({"status": "down", "db": "down"}, status_code=503)
+    database, guard_ok = await asyncio.gather(
+        db.check(request.app.state.pool),
+        guard.health(request.app.state.guard_client, request.app.state.guard_url),
+    )
+    body = {
+        "status": "ok" if database and guard_ok else "down",
+        "db": "ok" if database else "down",
+        "guard": "ok" if guard_ok else "down",
+    }
+    return JSONResponse(body, status_code=200 if database and guard_ok else 503)
 
 
 async def unavailable(request: Request, exc: Exception) -> JSONResponse:
@@ -94,13 +101,10 @@ async def unavailable(request: Request, exc: Exception) -> JSONResponse:
 def create_app(
     dsn: str,
     worker_transport: httpx.AsyncBaseTransport | None = None,
+    guard_transport: httpx.AsyncBaseTransport | None = None,
     clock=workers.utcnow,
-    guard_disabled: bool | None = None,
 ) -> Starlette:
-    """worker_transport and clock let tests stand in for workers and time.
-    guard_disabled defaults to GUARD_DISABLED=1 in the environment."""
-    if guard_disabled is None:
-        guard_disabled = guard.disabled_from_env()
+    """The transports and clock let tests stand in for services and time."""
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):
@@ -116,17 +120,19 @@ def create_app(
                 await chat.sweep_all_pending(conn)
             app.state.pool = pool
             app.state.clock = clock
-            app.state.guard_disabled = guard_disabled
-            if guard_disabled:
-                log.warning("GUARD_DISABLED is set: chat is NOT checked. Tests and the step 4 manual run only.")
             app.state.router = workers.Router()
             app.state.dsn = dsn
+            app.state.guard_url = os.environ.get("GUARD_URL", "http://guard:8080")
             retention = asyncio.create_task(records.retention_loop(pool, clock))
             app.state.hub = live.Hub(dsn)
             await app.state.hub.start()
             try:
-                async with httpx.AsyncClient(transport=worker_transport) as worker_client:
+                async with (
+                    httpx.AsyncClient(transport=worker_transport) as worker_client,
+                    httpx.AsyncClient(transport=guard_transport) as guard_client,
+                ):
                     app.state.worker_client = worker_client
+                    app.state.guard_client = guard_client
                     yield
             finally:
                 retention.cancel()

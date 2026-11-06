@@ -11,6 +11,7 @@ import psycopg
 import pytest
 
 from app.main import create_app
+from tests.fakes import fake_guard
 
 PG_IMAGE = "postgres:18.6@sha256:74935e72241653ca55e0414067e6d8763aceb8a810eb51b452253ec3dcfc4336"
 PG_PASSWORD = "test"
@@ -77,7 +78,7 @@ def empty_dsn(pg_server: str) -> str:
 
 @pytest.fixture(scope="session")
 async def app(dsn: str):
-    application = create_app(dsn, guard_disabled=True)
+    application = create_app(dsn, guard_transport=httpx.ASGITransport(app=fake_guard()))
     async with application.router.lifespan_context(application):
         yield application
 

@@ -2,14 +2,13 @@
 # Runs the Playwright smoke against a fresh compose stack, then removes it.
 # A fake model server runs on the host behind the real worker agent, so the
 # smoke covers join, heartbeat, routing and streaming without a real model.
-# The guard is off for this run only (GUARD_DISABLED=1), until step 6.
 # HTTP_PORT picks the host port (default 8080). Browsers live in node_modules.
 set -eu
 cd "$(dirname "$0")/../.."
 root=$(pwd)
 port=${HTTP_PORT:-8080}
 model_port=${FAKE_MODEL_PORT:-18092}
-export HTTP_PORT=$port GUARD_DISABLED=1 COMPOSE_PROJECT_NAME=cai-e2e-server
+export HTTP_PORT=$port COMPOSE_PROJECT_NAME=cai-e2e-server
 [ -e .env ] || ./scripts/init-env.sh
 fake_pid=""
 cleanup() {
@@ -25,7 +24,7 @@ uv run python -m tests.fake_model_server --host 0.0.0.0 --port "$model_port" &
 fake_pid=$!
 docker compose up -d --build
 code=""
-for _ in $(seq 1 60); do
+for _ in $(seq 1 120); do
     code=$(docker compose logs app 2>/dev/null | sed -n 's/.*setup code: \([A-Z0-9-]*\).*/\1/p' | tail -1)
     [ -n "$code" ] && curl -fs "http://localhost:$port/healthz" >/dev/null && break
     sleep 1

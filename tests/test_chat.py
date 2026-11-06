@@ -14,6 +14,7 @@ import uvicorn
 
 from app import chat, guard, workers
 from app.main import create_app
+from tests.fakes import fake_guard
 from tests.helpers import make_staff, new_client, post, sign_in
 
 MODEL = "gemma-4-e2b-it"
@@ -95,10 +96,26 @@ class Script(httpx.AsyncByteStream):
 async def setup(dsn):
     """A fresh app with scripted workers w1 and w2 offering MODEL, model on."""
     fake = Workers()
-    app = create_app(dsn, worker_transport=fake, guard_disabled=True)
+    app = create_app(
+        dsn,
+        worker_transport=fake,
+        guard_transport=httpx.ASGITransport(app=fake_guard()),
+    )
     async with app.router.lifespan_context(app):
         with psycopg.connect(dsn) as conn:
             generation = conn.execute("SELECT value->>'generation' FROM settings WHERE key = 'join_token'").fetchone()[0]
+            categories = {
+                name: {"enabled": True, "action": "block_flag", "message": "Please ask a teacher."}
+                for name in guard.PUBLISHED_CATEGORIES
+            }
+            conn.execute(
+                "UPDATE settings SET value = %s WHERE key = 'guard_categories'",
+                (json.dumps({
+                    "version": 1,
+                    "categories": categories,
+                    "uncategorized": {"action": "block_flag", "message": "Please ask a teacher."},
+                }),),
+            )
             conn.execute("DELETE FROM workers")
             for name in ("w1", "w2"):
                 conn.execute(
@@ -160,7 +177,7 @@ async def test_reply_streams_and_is_stored(setup, dsn):
     r = await send(student, convo, "What is a cell?")
     assert r.status_code == 200 and r.headers["content-type"].startswith("text/event-stream")
     evs = events(r.text)
-    assert [e for e, _ in evs] == ["delta", "delta", "done"]
+    assert [e for e, _ in evs] == ["delta", "done"]
     assert "".join(d["text"] for e, d in evs if e == "delta") == "Hello there"
     stored = rows(dsn, convo)
     assert stored[0][:3] == ("user", "What is a cell?", "ok")
@@ -173,7 +190,7 @@ async def test_stored_messages_notify_the_right_session_across_app_processes(set
     app, _ = setup
     teacher, student, session_id, roster = await lesson(app, dsn)
     conversation_id = await conversation(student)
-    other = create_app(dsn, guard_disabled=True)
+    other = create_app(dsn, guard_transport=httpx.ASGITransport(app=fake_guard()))
     async with other.router.lifespan_context(other):
         right = other.state.hub.subscribe(session_id)
         wrong_id = session_id + 1_000_000
@@ -490,18 +507,19 @@ async def test_paused_refuses_sending(setup, dsn):
     assert fake.requests == []
 
 
-async def test_guard_unavailable_fails_closed(dsn, setup):
+async def test_guard_unavailable_fails_closed(dsn, setup, monkeypatch):
     app, fake = setup
-    app.state.guard_disabled = False
-    try:
-        _, student, _, _ = await lesson(app, dsn)
-        convo = await conversation(student)
-        r = await send(student, convo, "hi")
-        assert (r.status_code, r.json()) == (503, {"error": "chat_unavailable"})
-        assert fake.requests == []
-        assert rows(dsn, convo)[0][2] == "error"
-    finally:
-        app.state.guard_disabled = True
+
+    async def unavailable(*args, **kwargs):
+        raise guard.GuardUnavailable("down")
+
+    monkeypatch.setattr(guard, "run_check", unavailable)
+    _, student, _, _ = await lesson(app, dsn)
+    convo = await conversation(student)
+    r = await send(student, convo, "hi")
+    assert (r.status_code, r.json()) == (503, {"error": "chat_unavailable"})
+    assert fake.requests == []
+    assert rows(dsn, convo)[0][2] == "error"
 
 
 async def test_bad_text_and_access(setup, dsn):
@@ -567,14 +585,26 @@ async def test_failures_before_any_text_retry_without_marking_down(setup, dsn, m
 
 async def test_a_drop_mid_reply_keeps_the_partial_as_an_error(setup, dsn):
     app, fake = setup
+    fake.scripts["w1"] = fake.scripts["w2"] = ["Part. ", "ial", "CUT"]
+    _, student, _, _ = await lesson(app, dsn)
+    convo = await conversation(student)
+    evs = events((await send(student, convo, "hi")).text)
+    assert [e for e, _ in evs] == ["delta", "error"]
+    assert evs[-1][1]["message"] == chat.CUT_OFF
+    assert rows(dsn, convo)[1][:4] == ("assistant", "Part. ial", "error", 6)
+    assert len(fake.requests) == 1  # no failover after text was shown
+
+
+async def test_a_drop_before_a_checked_segment_retries_without_releasing_text(setup, dsn):
+    app, fake = setup
     fake.scripts["w1"] = fake.scripts["w2"] = ["Part", "ial", "CUT"]
     _, student, _, _ = await lesson(app, dsn)
     convo = await conversation(student)
     evs = events((await send(student, convo, "hi")).text)
-    assert [e for e, _ in evs] == ["delta", "delta", "error"]
-    assert evs[-1][1]["message"] == chat.CUT_OFF
-    assert rows(dsn, convo)[1][:4] == ("assistant", "Partial", "error", 7)
-    assert len(fake.requests) == 1  # no failover after text was shown
+    assert [e for e, _ in evs] == ["error"]
+    assert evs[-1][1]["message"] == chat.NO_MODEL
+    assert rows(dsn, convo)[1][:4] == ("assistant", "", "error", 0)
+    assert len(fake.requests) == 2
 
 
 async def test_no_live_worker(setup, dsn):
@@ -602,6 +632,371 @@ async def test_a_reply_that_cannot_be_saved_says_so(setup, dsn, monkeypatch):
     monkeypatch.setattr(chat, "store_flags", broken)
     evs = events((await send(student, convo, "hi")).text)
     assert evs[-1] == ("error", {"message": chat.NOT_SAVED})
+
+
+def configure_guard(dsn, categories):
+    document = {
+        "version": 1,
+        "categories": categories,
+        "uncategorized": {"action": "block_flag", "message": "Please ask a teacher."},
+    }
+    with psycopg.connect(dsn) as conn:
+        conn.execute("UPDATE settings SET value = %s WHERE key = 'guard_categories'", (json.dumps(document),))
+
+
+async def test_guard_checks_are_stored_with_duration_before_release(setup, dsn, monkeypatch):
+    app, fake = setup
+    monkeypatch.setattr(guard, "PUBLISHED_CATEGORIES", ("Violent",))
+    configure_guard(dsn, {
+        "Violent": {"enabled": True, "action": "block_flag", "message": "Please stop."},
+    })
+
+    async def safe(app_, ctx, reply=None):
+        return guard.CheckResult(True, (), "Safety: Safe\nCategories: None", 23 if reply is None else 31)
+
+    monkeypatch.setattr(guard, "run_check", safe)
+    _, student, _, _ = await lesson(app, dsn)
+    convo = await conversation(student)
+
+    async def observe_prompt(_request):
+        with psycopg.connect(dsn) as conn:
+            assert conn.execute(
+                "SELECT gc.kind, gc.duration_ms, m.guard_status FROM guard_checks gc"
+                " JOIN messages m ON m.id = gc.message_id"
+                " WHERE m.conversation_id = %s ORDER BY gc.id", (convo,),
+            ).fetchall() == [("prompt", 23, "passed")]
+
+    fake.on_request = observe_prompt
+    evs = events((await send(student, convo, "hi")).text)
+    assert evs[0] == ("delta", {"text": "Hello there"})
+    assert evs[1][0] == "done"
+    with psycopg.connect(dsn) as conn:
+        evidence = conn.execute(
+            "SELECT gc.kind, gc.sequence, gc.duration_ms, m.guard_status FROM guard_checks gc"
+            " JOIN messages m ON m.id = gc.message_id"
+            " WHERE m.conversation_id = %s ORDER BY gc.id", (convo,),
+        ).fetchall()
+    assert evidence == [("prompt", 0, 23, "passed"), ("reply_segment", 0, 31, "passed")]
+
+
+async def test_resolved_prompt_actions_store_each_flag_and_first_block_message(setup, dsn, monkeypatch):
+    app, fake = setup
+    monkeypatch.setattr(guard, "PUBLISHED_CATEGORIES", ("Violent", "Self-Harm"))
+    configure_guard(dsn, {
+        "Violent": {"enabled": True, "action": "allow_flag", "message": "Violence."},
+        "Self-Harm": {"enabled": True, "action": "block", "message": "Please get help."},
+    })
+
+    async def unsafe(app_, ctx, reply=None):
+        return guard.CheckResult(False, ("violent", "Self-Harm"), "Safety: Unsafe", 9)
+
+    monkeypatch.setattr(guard, "run_check", unsafe)
+    _, student, _, _ = await lesson(app, dsn)
+    convo = await conversation(student)
+    response = await send(student, convo, "bad thing")
+    assert response.json() == {"blocked": "Please get help."}
+    assert fake.requests == []
+    with psycopg.connect(dsn) as conn:
+        message = conn.execute(
+            "SELECT status, guard_status FROM messages WHERE conversation_id = %s", (convo,),
+        ).fetchone()
+        flags = conn.execute(
+            "SELECT category, action FROM flags f JOIN messages m ON m.id = f.message_id"
+            " WHERE m.conversation_id = %s", (convo,),
+        ).fetchall()
+    assert message == ("blocked", "blocked")
+    assert flags == [("Violent", "allow_flag")]
+
+
+async def test_reply_block_is_persisted_before_any_buffered_text_is_released(setup, dsn, monkeypatch):
+    app, fake = setup
+    monkeypatch.setattr(guard, "PUBLISHED_CATEGORIES", ("Violent",))
+    configure_guard(dsn, {
+        "Violent": {"enabled": True, "action": "block_flag", "message": "That reply was stopped."},
+    })
+
+    async def check(app_, ctx, reply=None):
+        if reply is None:
+            return guard.CheckResult(True, (), "Safety: Safe", 4)
+        return guard.CheckResult(False, ("Violent",), "Safety: Unsafe", 12)
+
+    monkeypatch.setattr(guard, "run_check", check)
+    _, student, _, _ = await lesson(app, dsn)
+    convo = await conversation(student)
+    evs = events((await send(student, convo, "hi")).text)
+    assert evs == [("blocked", {"message": "That reply was stopped."})]
+    assert rows(dsn, convo)[1][:4] == ("assistant", "Hello there", "blocked", 0)
+    with psycopg.connect(dsn) as conn:
+        reply_row = conn.execute(
+            "SELECT guard_status FROM messages WHERE conversation_id = %s AND role = 'assistant'", (convo,),
+        ).fetchone()
+        reply_check = conn.execute(
+            "SELECT sequence, duration_ms FROM guard_checks gc JOIN messages m ON m.id = gc.message_id"
+            " WHERE m.conversation_id = %s AND gc.kind = 'reply_segment'", (convo,),
+        ).fetchone()
+        flags = conn.execute(
+            "SELECT category, action FROM flags f JOIN messages m ON m.id = f.message_id"
+            " WHERE m.conversation_id = %s AND m.role = 'assistant'", (convo,),
+        ).fetchall()
+    assert reply_row == ("blocked",)
+    assert reply_check == (0, 12)
+    assert flags == [("Violent", "block_flag")]
+
+
+async def test_real_reply_gate_blocks_mid_stream_after_safe_segment(setup, dsn, monkeypatch):
+    app, fake = setup
+    fake.scripts["w1"] = ["Safe part. ", "Bad part.", "STOP"]
+    monkeypatch.setattr(guard, "PUBLISHED_CATEGORIES", ("Violent",))
+    configure_guard(dsn, {
+        "Violent": {"enabled": True, "action": "block_flag", "message": "That reply was stopped."},
+    })
+
+    async def check(app_, ctx, reply=None):
+        if reply is None or reply == "Safe part. ":
+            return guard.CheckResult(True, (), "Safety: Safe", 5)
+        return guard.CheckResult(False, ("Violent",), "Safety: Unsafe", 7)
+
+    monkeypatch.setattr(guard, "run_check", check)
+    _, student, _, _ = await lesson(app, dsn)
+    convo = await conversation(student)
+    evs = events((await send(student, convo, "hi")).text)
+    assert evs == [
+        ("delta", {"text": "Safe part. "}),
+        ("blocked", {"message": "That reply was stopped."}),
+    ]
+    with psycopg.connect(dsn) as conn:
+        assert conn.execute(
+            "SELECT status, guard_status, shown_length FROM messages"
+            " WHERE conversation_id = %s AND role = 'assistant'", (convo,),
+        ).fetchone() == ("blocked", "blocked", len("Safe part. "))
+        checks = conn.execute(
+            "SELECT sequence, safe FROM guard_checks gc JOIN messages m ON m.id = gc.message_id"
+            " WHERE m.conversation_id = %s AND gc.kind = 'reply_segment' ORDER BY sequence", (convo,),
+        ).fetchall()
+        flags = conn.execute(
+            "SELECT category, action FROM flags f JOIN messages m ON m.id = f.message_id"
+            " WHERE m.conversation_id = %s AND m.role = 'assistant'", (convo,),
+        ).fetchall()
+    assert checks == [(0, True), (1, False)]
+    assert flags == [("Violent", "block_flag")]
+
+
+async def test_reply_checks_cumulative_sentence_segments_in_order(setup, dsn, monkeypatch):
+    app, fake = setup
+    fake.scripts["w1"] = ["x" * 301, " One. ", "Two?", "STOP"]
+    monkeypatch.setattr(guard, "PUBLISHED_CATEGORIES", ())
+    configure_guard(dsn, {})
+    seen = []
+
+    async def safe(app_, ctx, reply=None):
+        if reply is not None:
+            seen.append(reply)
+        return guard.CheckResult(True, (), "Safety: Safe", len(seen) + 1)
+
+    monkeypatch.setattr(guard, "run_check", safe)
+    _, student, _, _ = await lesson(app, dsn)
+    convo = await conversation(student)
+    evs = events((await send(student, convo, "hi")).text)
+    deltas = [data["text"] for event, data in evs if event == "delta"]
+    assert [len(value) for value in deltas] == [300, len("x One. "), len("Two?")]
+    assert seen == ["x" * 300, "x" * 301 + " One. ", "x" * 301 + " One. Two?"]
+    with psycopg.connect(dsn) as conn:
+        assert conn.execute(
+            "SELECT sequence FROM guard_checks gc JOIN messages m ON m.id = gc.message_id"
+            " WHERE m.conversation_id = %s AND kind = 'reply_segment' ORDER BY sequence", (convo,),
+        ).fetchall() == [(0,), (1,), (2,)]
+
+
+async def test_repeated_allow_flag_reply_category_creates_one_flag(setup, dsn, monkeypatch):
+    app, fake = setup
+    fake.scripts["w1"] = ["One. ", "Two.", "STOP", "DONE"]
+    monkeypatch.setattr(guard, "PUBLISHED_CATEGORIES", ("Violent",))
+    configure_guard(dsn, {
+        "Violent": {"enabled": True, "action": "allow_flag", "message": "Please stop."},
+    })
+
+    async def check(app_, ctx, reply=None):
+        if reply is None:
+            return guard.CheckResult(True, (), "Safety: Safe", 1)
+        return guard.CheckResult(False, ("Violent",), "Safety: Unsafe", 2)
+
+    monkeypatch.setattr(guard, "run_check", check)
+    _, student, _, _ = await lesson(app, dsn)
+    convo = await conversation(student)
+    assert events((await send(student, convo, "hi")).text)[-1][0] == "done"
+    with psycopg.connect(dsn) as conn:
+        flags = conn.execute(
+            "SELECT category, action FROM flags f JOIN messages m ON m.id = f.message_id"
+            " WHERE m.conversation_id = %s AND m.role = 'assistant'", (convo,),
+        ).fetchall()
+        checks = conn.execute(
+            "SELECT count(*) FROM guard_checks gc JOIN messages m ON m.id = gc.message_id"
+            " WHERE m.conversation_id = %s AND gc.kind = 'reply_segment'", (convo,),
+        ).fetchone()[0]
+    assert flags == [("Violent", "allow_flag")]
+    assert checks == 2
+
+
+async def test_disabled_category_is_evidence_but_does_not_act(setup, dsn, monkeypatch):
+    app, fake = setup
+    monkeypatch.setattr(guard, "PUBLISHED_CATEGORIES", ("Violent",))
+    configure_guard(dsn, {
+        "Violent": {"enabled": False, "action": "block_flag", "message": "Please stop."},
+    })
+
+    async def check(app_, ctx, reply=None):
+        if reply is None:
+            return guard.CheckResult(False, ("Violent",), "Safety: Unsafe", 3)
+        return guard.CheckResult(True, (), "Safety: Safe", 4)
+
+    monkeypatch.setattr(guard, "run_check", check)
+    _, student, _, _ = await lesson(app, dsn)
+    convo = await conversation(student)
+    assert (await send(student, convo, "classroom question")).status_code == 200
+    assert len(fake.requests) == 1
+    with psycopg.connect(dsn) as conn:
+        assert conn.execute(
+            "SELECT categories FROM guard_checks gc JOIN messages m ON m.id = gc.message_id"
+            " WHERE m.conversation_id = %s AND gc.kind = 'prompt'", (convo,),
+        ).fetchone()[0] == ["Violent"]
+        assert conn.execute(
+            "SELECT count(*) FROM flags f JOIN messages m ON m.id = f.message_id"
+            " WHERE m.conversation_id = %s", (convo,),
+        ).fetchone()[0] == 0
+
+
+async def test_unknown_prompt_category_uses_fallback_and_keeps_raw_evidence(setup, dsn, monkeypatch):
+    app, fake = setup
+    monkeypatch.setattr(guard, "PUBLISHED_CATEGORIES", ("Violent",))
+    configure_guard(dsn, {
+        "Violent": {"enabled": True, "action": "allow_flag", "message": "Violence."},
+    })
+
+    async def unknown(app_, ctx, reply=None):
+        return guard.CheckResult(False, ("New Label",), "Safety: Unsafe", 5)
+
+    monkeypatch.setattr(guard, "run_check", unknown)
+    _, student, _, _ = await lesson(app, dsn)
+    convo = await conversation(student)
+    response = await send(student, convo, "question")
+    assert response.json() == {"blocked": "Please ask a teacher."}
+    assert fake.requests == []
+    with psycopg.connect(dsn) as conn:
+        evidence = conn.execute(
+            "SELECT categories FROM guard_checks gc JOIN messages m ON m.id = gc.message_id"
+            " WHERE m.conversation_id = %s", (convo,),
+        ).fetchone()[0]
+        flags = conn.execute(
+            "SELECT category, action FROM flags f JOIN messages m ON m.id = f.message_id"
+            " WHERE m.conversation_id = %s", (convo,),
+        ).fetchall()
+    assert evidence == ["New Label"]
+    assert flags == [("Uncategorized", "block_flag")]
+
+
+@pytest.mark.parametrize("failure", ["malformed", "timeout"])
+async def test_real_adapter_failure_stops_before_worker_and_stores_error(setup, dsn, failure):
+    app, fake = setup
+    if failure == "malformed":
+        transport = httpx.ASGITransport(app=fake_guard("not a verdict"))
+    else:
+        async def timeout(request):
+            raise httpx.ReadTimeout("late", request=request)
+        transport = httpx.MockTransport(timeout)
+
+    old_client = app.state.guard_client
+    async with httpx.AsyncClient(transport=transport) as guard_client:
+        app.state.guard_client = guard_client
+        try:
+            _, student, _, _ = await lesson(app, dsn)
+            convo = await conversation(student)
+            response = await send(student, convo, "hi")
+        finally:
+            app.state.guard_client = old_client
+
+    assert response.status_code == 503
+    assert response.json() == {"error": "chat_unavailable"}
+    assert fake.requests == []
+    with psycopg.connect(dsn) as conn:
+        assert conn.execute(
+            "SELECT status, guard_status FROM messages WHERE conversation_id = %s", (convo,),
+        ).fetchone() == ("error", "error")
+        assert conn.execute(
+            "SELECT count(*) FROM guard_checks gc JOIN messages m ON m.id = gc.message_id"
+            " WHERE m.conversation_id = %s", (convo,),
+        ).fetchone()[0] == 0
+
+
+async def test_invalid_guard_configuration_fails_before_guard_or_worker(setup, dsn, monkeypatch):
+    app, fake = setup
+    monkeypatch.setattr(guard, "PUBLISHED_CATEGORIES", ("Violent",))
+    configure_guard(dsn, {})
+    called = False
+
+    async def should_not_run(app_, ctx, reply=None):
+        nonlocal called
+        called = True
+        return guard.CheckResult(True, (), "Safety: Safe", 1)
+
+    monkeypatch.setattr(guard, "run_check", should_not_run)
+    _, student, _, _ = await lesson(app, dsn)
+    convo = await conversation(student)
+    response = await send(student, convo, "hi")
+    assert response.status_code == 503
+    assert response.json() == {"error": "chat_unavailable"}
+    assert called is False and fake.requests == []
+    with psycopg.connect(dsn) as conn:
+        assert conn.execute(
+            "SELECT status, guard_status FROM messages WHERE conversation_id = %s", (convo,),
+        ).fetchone() == ("error", "error")
+
+
+async def test_prompt_evidence_storage_failure_records_a_guard_error(setup, dsn, monkeypatch):
+    app, fake = setup
+    monkeypatch.setattr(guard, "PUBLISHED_CATEGORIES", ())
+    configure_guard(dsn, {})
+
+    async def safe(app_, ctx, reply=None):
+        return guard.CheckResult(True, (), "Safety: Safe", 1)
+
+    async def cannot_store(*args, **kwargs):
+        raise psycopg.OperationalError("evidence write failed")
+
+    monkeypatch.setattr(guard, "run_check", safe)
+    monkeypatch.setattr(guard, "store_check", cannot_store)
+    _, student, _, _ = await lesson(app, dsn)
+    convo = await conversation(student)
+
+    response = await send(student, convo, "hi")
+
+    assert response.status_code == 503
+    assert response.json() == {"error": "chat_unavailable"}
+    assert fake.requests == []
+    with psycopg.connect(dsn) as conn:
+        assert conn.execute(
+            "SELECT status, guard_status FROM messages WHERE conversation_id = %s", (convo,),
+        ).fetchone() == ("error", "error")
+
+
+async def test_worker_error_after_a_checked_segment_keeps_guard_passed(setup, dsn, monkeypatch):
+    app, fake = setup
+    fake.scripts["w1"] = ["Hello.", "CUT"]
+    monkeypatch.setattr(guard, "PUBLISHED_CATEGORIES", ())
+    configure_guard(dsn, {})
+
+    async def safe(app_, ctx, reply=None):
+        return guard.CheckResult(True, (), "Safety: Safe", 2)
+
+    monkeypatch.setattr(guard, "run_check", safe)
+    _, student, _, _ = await lesson(app, dsn)
+    convo = await conversation(student)
+    evs = events((await send(student, convo, "hi")).text)
+    assert evs[-1] == ("error", {"message": chat.CUT_OFF})
+    with psycopg.connect(dsn) as conn:
+        assert conn.execute(
+            "SELECT status, guard_status, shown_length FROM messages"
+            " WHERE conversation_id = %s AND role = 'assistant'", (convo,),
+        ).fetchone() == ("error", "passed", len("Hello."))
 
 
 # The guard seam, driven by a stub guard.
@@ -785,7 +1180,7 @@ async def test_startup_recovers_stale_pending_rows(setup, dsn):
             (convo,),
         ).fetchone()
 
-    restarted = create_app(dsn, guard_disabled=True)
+    restarted = create_app(dsn, guard_transport=httpx.ASGITransport(app=fake_guard()))
     async with restarted.router.lifespan_context(restarted):
         with psycopg.connect(dsn) as conn:
             assert conn.execute("SELECT status FROM messages WHERE id = %s", (row[0],)).fetchone() == ("error",)
@@ -793,7 +1188,7 @@ async def test_startup_recovers_stale_pending_rows(setup, dsn):
 
 async def test_a_student_leaving_mid_reply_keeps_the_partial(setup, dsn):
     app, fake = setup
-    fake.scripts["w1"] = fake.scripts["w2"] = ["Part", 5, "never"]
+    fake.scripts["w1"] = fake.scripts["w2"] = ["Part.", 5, "never"]
     _, student, _, _ = await lesson(app, dsn)
     convo = await conversation(student)
     cookie = f"session={student.cookies['session']}; csrf_token={student.cookies['csrf_token']}"
@@ -823,13 +1218,13 @@ async def test_a_student_leaving_mid_reply_keeps_the_partial(setup, dsn):
             break
     gone.set()
     await asyncio.wait_for(task, 20)
-    assert rows(dsn, convo)[1][:4] == ("assistant", "Part", "error", 4)
+    assert rows(dsn, convo)[1][:4] == ("assistant", "Part.", "error", 5)
     assert app.state.router.in_flight[ID["w1"]] == app.state.router.in_flight[ID["w2"]] == 0
 
 
 async def test_disconnect_during_a_backpressured_send_cleans_up(setup, dsn):
     app, fake = setup
-    fake.scripts["w1"] = fake.scripts["w2"] = ["Part", 5, "never"]
+    fake.scripts["w1"] = fake.scripts["w2"] = ["Part.", 5, "never"]
     _, student, _, _ = await lesson(app, dsn)
     convo = await conversation(student)
     cookie = f"session={student.cookies['session']}; csrf_token={student.cookies['csrf_token']}"
@@ -858,7 +1253,7 @@ async def test_disconnect_during_a_backpressured_send_cleans_up(setup, dsn):
             await never.wait()
 
     await asyncio.wait_for(app(scope, receive, blocked_send), 20)
-    assert rows(dsn, convo)[1][:4] == ("assistant", "Part", "error", 4)
+    assert rows(dsn, convo)[1][:4] == ("assistant", "Part.", "error", 5)
     assert app.state.router.in_flight[ID["w1"]] == app.state.router.in_flight[ID["w2"]] == 0
     assert fake.streams["w1"].closed
 
@@ -868,7 +1263,12 @@ async def test_cancel_during_upstream_read_awaits_async_close(setup):
     fake.scripts["w1"] = ["Part", "WAIT"]
     worker = workers.Worker(ID["w1"], "http://w1:8081", "key-w1", [MODEL], 4,
                             app.state.clock(), False, 1)
-    stream = chat.stream_from(app, worker, {}, guard.reply_gate(app, guard.Context(1, 1, "hi")), [])
+
+    class PassthroughGate:
+        async def feed(self, delta):
+            return delta
+
+    stream = chat.stream_from(app, worker, {}, PassthroughGate(), [])
     assert await anext(stream) == "Part"
     upstream = fake.streams["w1"]
     upstream.close_checkpoint = True

@@ -55,11 +55,20 @@ def fake_guard(verdict: str = "Safety: Safe\nCategories: None") -> Starlette:
     """A llama-server stand-in that answers every check with a Qwen3Guard verdict."""
 
     async def chat(request: Request):
-        await request.json()
+        body = await request.json()
+        answer = verdict
+        if len(body.get("messages", [])) > 1 and "Refusal:" not in answer:
+            answer += "\nRefusal: No"
         return JSONResponse({
             "object": "chat.completion",
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": verdict},
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": answer},
                          "finish_reason": "stop"}],
         })
 
-    return Starlette(routes=[Route("/v1/chat/completions", chat, methods=["POST"])])
+    async def health(request: Request):
+        return JSONResponse({"status": "ok"})
+
+    return Starlette(routes=[
+        Route("/health", health),
+        Route("/v1/chat/completions", chat, methods=["POST"]),
+    ])

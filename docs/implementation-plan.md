@@ -73,7 +73,7 @@ Outcome: a student on a phone and a laptop each pick a model and get a streamed 
 
 - `chat.py` pipeline steps 1, 2, 4, 5 and 7. Message limit enforced. Retry on another worker when one fails.
 - Student page in `web/`: the monitoring notice before the first message and on every chat, model picker showing enabled models only, streaming reply, new conversation, list of this session's conversations. Accessible markup.
-- The guard step is a pass-through that fails closed unless `GUARD_DISABLED=1`, which only the test settings and this step's manual run use.
+- The guard seam was initially a pass-through for this step's isolated manual run. Step 6 removed that temporary bypass.
 
 Requirements: R4.1-R4.4, acceptance 3 (minus the teacher side), 4, 6.
 
@@ -109,7 +109,7 @@ Requirements: R4.5, R6.1-R6.6.
 
 Checks: unit tests for parsing every verdict shape. API tests for saving the settings, and with the fake guard for each action (allow+flag, block+flag, block), a block with the configured message shown and no model reply, a reply segment tripping mid-stream, guard down. On demand: the step 5 script against the guard as deployed.
 
-Partial delivery: migration 005 adds message guard status and ordered guard evidence rows, including each check's duration in milliseconds. The versioned category settings document, authenticated admin API and admin form are present with an always-active Uncategorized fallback. Student export and retention include the new evidence. The winner-specific category seed, compose service, verdict parser and chat pipeline enforcement remain to be delivered after steps 4 and 5.
+Delivered 2026-11-06: migration 005 adds message guard status and ordered evidence rows, including each check's duration in milliseconds. Migration 007 seeds Qwen3Guard's complete category list without overwriting customized settings. The authenticated admin form controls every action and message and warns when the guard is unavailable. The pinned CPU service, strict verdict parser, prompt check, cumulative segmented reply checks, evidence export and retention, and fail-closed pipeline are connected. No prompt reaches a worker and no reply segment reaches a student until its valid guard check is committed.
 
 ## 7. Teacher console, live
 
