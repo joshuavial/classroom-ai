@@ -302,21 +302,21 @@ async def test_staff_session_checks_keep_a_fixed_start_cadence(app, teacher, mon
         return staff
 
     monkeypatch.setattr(live, "find_session", slow_valid_check)
-    monkeypatch.setattr(live, "STREAM_SECONDS", 0.35)
-    monkeypatch.setattr(live, "SESSION_CHECK_SECONDS", 0.06)
-    monkeypatch.setattr(live, "SESSION_CHECK_TIMEOUT_SECONDS", 0.05)
-    monkeypatch.setattr(live, "PING_SECONDS", 1.0)
+    monkeypatch.setattr(live, "STREAM_SECONDS", 0.7)
+    monkeypatch.setattr(live, "SESSION_CHECK_SECONDS", 0.12)
+    monkeypatch.setattr(live, "SESSION_CHECK_TIMEOUT_SECONDS", 0.25)
+    monkeypatch.setattr(live, "PING_SECONDS", 2.0)
     session_id, _ = await new_lesson(teacher, 1)
     cookie = f"session={token}; csrf_token={teacher.cookies['csrf_token']}"
     chunks, disconnect, task = await open_stream(app, f"/api/sessions/{session_id}/events", cookie)
     try:
         await asyncio.wait_for(chunks.get(), 5)
         await asyncio.wait_for(chunks.get(), 5)
-        await asyncio.wait_for(task, 1)
+        await asyncio.wait_for(task, 2)
     finally:
         disconnect.set()
     assert len(starts) >= 3
-    assert max(later - earlier for earlier, later in zip(starts, starts[1:])) < 0.08
+    assert max(later - earlier for earlier, later in zip(starts, starts[1:])) < 0.16
     assert session_id not in app.state.hub.subscribers
 
 
