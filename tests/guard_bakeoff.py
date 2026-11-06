@@ -10,13 +10,16 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import hashlib
+import http.client
 import json
 import math
 import os
 import platform
+import random
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -227,6 +230,185 @@ def compact_json(value: Any) -> str:
         separators=(",", ":"),
         sort_keys=True,
     ) + "\n"
+
+
+CHECKPOINT_FORMAT_VERSION = 1
+
+
+def outcome_to_dict(outcome: CheckOutcome, latency: float = 0.0) -> dict[str, Any]:
+    return {
+        "categories": list(outcome.categories),
+        "errors": list(outcome.errors),
+        "latency_seconds": latency,
+        "operational_safe": outcome.operational_safe,
+        "raw_outputs": list(outcome.raw_outputs),
+        "safe": outcome.safe,
+    }
+
+
+def outcome_from_dict(data: dict[str, Any]) -> tuple[CheckOutcome, float]:
+    safe_val = data.get("safe")
+    safe = bool(safe_val) if safe_val is not None else None
+    outcome = CheckOutcome(
+        safe=safe,
+        categories=tuple(str(c) for c in data.get("categories", ())),
+        operational_safe=bool(data.get("operational_safe", False)),
+        raw_outputs=tuple(str(r) for r in data.get("raw_outputs", ())),
+        errors=tuple(str(e) for e in data.get("errors", ())),
+    )
+    latency = float(data.get("latency_seconds", 0.0))
+    return outcome, latency
+
+
+def load_checkpoint(
+    checkpoint_path: Path,
+    candidate_name: str | None = None,
+    corpus_sha256: str | None = None,
+    model_file_sha256: str | None = None,
+    server_config: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    if not checkpoint_path.is_file():
+        return None
+    try:
+        data = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("format_version") != CHECKPOINT_FORMAT_VERSION:
+        return None
+    if not isinstance(data.get("candidate"), str) or (
+        candidate_name is not None and data["candidate"] != candidate_name
+    ):
+        return None
+    if not isinstance(data.get("corpus_sha256"), str) or (
+        corpus_sha256 is not None and data["corpus_sha256"] != corpus_sha256
+    ):
+        return None
+    if model_file_sha256 is not None and data.get("model_file_sha256") != model_file_sha256:
+        return None
+    if server_config is not None:
+        ckpt_cfg = data.get("server_config")
+        if not isinstance(ckpt_cfg, dict):
+            return None
+        for key in (
+            "cache_type_k",
+            "cache_type_v",
+            "clients",
+            "context_limit_per_client",
+            "help_sha256",
+            "max_retries",
+            "server_sha256",
+            "threads",
+            "timeout_seconds",
+        ):
+            if key in server_config and ckpt_cfg.get(key) != server_config[key]:
+                return None
+    elapsed = data.get("elapsed_seconds")
+    if (
+        type(elapsed) not in (int, float)
+        or isinstance(elapsed, bool)
+        or not math.isfinite(elapsed)
+        or elapsed < 0
+    ):
+        return None
+    total_records = data.get("total_records")
+    if (
+        type(total_records) is not int
+        or isinstance(total_records, bool)
+        or total_records < 0
+    ):
+        return None
+    items = data.get("items")
+    if not isinstance(items, dict):
+        return None
+    for item_id, item_data in items.items():
+        if not isinstance(item_id, str) or not isinstance(item_data, dict):
+            return None
+        cats = item_data.get("categories")
+        if not isinstance(cats, list) or not all(isinstance(x, str) for x in cats):
+            return None
+        errs = item_data.get("errors")
+        if not isinstance(errs, list) or not all(isinstance(x, str) for x in errs):
+            return None
+        raws = item_data.get("raw_outputs")
+        if not isinstance(raws, list) or not all(isinstance(x, str) for x in raws):
+            return None
+        if type(item_data.get("operational_safe")) is not bool:
+            return None
+        if "safe" not in item_data:
+            return None
+        safe_val = item_data["safe"]
+        if safe_val is not None and type(safe_val) is not bool:
+            return None
+        if safe_val is None and not errs:
+            return None
+        lat = item_data.get("latency_seconds")
+        if (
+            type(lat) not in (int, float)
+            or isinstance(lat, bool)
+            or not math.isfinite(lat)
+            or lat < 0
+        ):
+            return None
+    return data
+
+
+def save_checkpoint(
+    checkpoint_path: Path,
+    candidate_name: str,
+    corpus_sha256: str,
+    total_records: int,
+    completed_items: dict[str, dict[str, Any]],
+    elapsed_seconds: float = 0.0,
+    model_file_sha256: str = "",
+    server_config: dict[str, Any] | None = None,
+) -> None:
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = checkpoint_path.with_name(f"{checkpoint_path.name}.tmp.{os.getpid()}")
+    document = {
+        "candidate": candidate_name,
+        "completed_count": len(completed_items),
+        "corpus_sha256": corpus_sha256,
+        "elapsed_seconds": elapsed_seconds,
+        "format_version": CHECKPOINT_FORMAT_VERSION,
+        "items": completed_items,
+        "model_file_sha256": model_file_sha256,
+        "server_config": server_config or {},
+        "total_records": total_records,
+    }
+    temp_path.write_text(compact_json(document), encoding="utf-8")
+    os.replace(temp_path, checkpoint_path)
+
+
+def save_output_document(output_path: Path, document: dict[str, Any]) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = output_path.with_name(f"{output_path.name}.tmp.{os.getpid()}")
+    temp_path.write_text(compact_json(document), encoding="utf-8")
+    os.replace(temp_path, output_path)
+
+
+def resolve_checkpoint_path(
+    checkpoint_arg: Path | None,
+    output_path: Path | None,
+    candidate_name: str,
+) -> Path | None:
+    if checkpoint_arg is not None:
+        raw_str = str(checkpoint_arg)
+        if "{candidate}" in raw_str:
+            return Path(raw_str.replace("{candidate}", candidate_name))
+        if (
+            checkpoint_arg.is_dir()
+            or raw_str.endswith(("/", "\\"))
+            or not checkpoint_arg.suffix
+        ):
+            return checkpoint_arg / f"{candidate_name}.checkpoint.json"
+        return checkpoint_arg
+    if output_path is not None:
+        return output_path.with_name(
+            f"{output_path.stem}.{candidate_name}.checkpoint.json"
+        )
+    return None
 
 
 def load_corpus(path: Path) -> list[dict[str, Any]]:
@@ -505,30 +687,84 @@ def validate_sampler_settings(settings: dict[str, Any]) -> None:
         raise ValidationError("run configuration is not frozen greedy decoding")
 
 
+_ACTIVE_CANCEL_EVENT: threading.Event | None = None
+
+
+def _check_cancellation() -> None:
+    if _ACTIVE_CANCEL_EVENT is not None and _ACTIVE_CANCEL_EVENT.is_set():
+        raise KeyboardInterrupt("cancelled")
+
+
+def _interruptible_sleep(delay: float, cancel_event: threading.Event | None = None) -> None:
+    evt = cancel_event if cancel_event is not None else _ACTIVE_CANCEL_EVENT
+    if evt is not None:
+        if evt.wait(delay):
+            raise KeyboardInterrupt("cancelled")
+    else:
+        time.sleep(delay)
+
+
+def _backoff_sleep(
+    attempt: int,
+    retry_delay: float,
+    cancel_event: threading.Event | None = None,
+) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise KeyboardInterrupt("cancelled")
+    _check_cancellation()
+    jitter = random.uniform(0.8, 1.2)
+    delay = min(retry_delay * (2**attempt) * jitter, 10.0)
+    _interruptible_sleep(delay, cancel_event=cancel_event)
+
+
 def _request_json(
     url: str,
     payload: dict[str, Any] | None,
     timeout: float,
     method: str = "POST",
+    max_retries: int = 0,
+    retry_delay: float = 0.5,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     data = None if payload is None else json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(
-        url,
-        data=data,
-        method=method,
-        headers={"Content-Type": "application/json"},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            body = response.read()
-    except TimeoutError as exc:
-        raise TimeoutFailure(str(exc)) from exc
-    except urllib.error.URLError as exc:
-        if isinstance(exc.reason, TimeoutError):
-            raise TimeoutFailure(str(exc.reason)) from exc
-        raise TransportFailure(str(exc)) from exc
-    except OSError as exc:
-        raise TransportFailure(str(exc)) from exc
+    for attempt in range(max_retries + 1):
+        if cancel_event is not None and cancel_event.is_set():
+            raise KeyboardInterrupt("cancelled")
+        _check_cancellation()
+        request = urllib.request.Request(
+            url,
+            data=data,
+            method=method,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                body = response.read()
+            break
+        except TimeoutError as exc:
+            if attempt < max_retries:
+                _backoff_sleep(attempt, retry_delay, cancel_event)
+                continue
+            raise TimeoutFailure(str(exc)) from exc
+        except urllib.error.HTTPError as exc:
+            if attempt < max_retries and exc.code in (502, 503, 504):
+                _backoff_sleep(attempt, retry_delay, cancel_event)
+                continue
+            raise TransportFailure(str(exc)) from exc
+        except urllib.error.URLError as exc:
+            if attempt < max_retries:
+                _backoff_sleep(attempt, retry_delay, cancel_event)
+                continue
+            if isinstance(exc.reason, TimeoutError) or "timed out" in str(exc.reason).lower():
+                raise TimeoutFailure(str(exc.reason)) from exc
+            raise TransportFailure(str(exc)) from exc
+        except (http.client.HTTPException, OSError) as exc:
+            if attempt < max_retries:
+                _backoff_sleep(attempt, retry_delay, cancel_event)
+                continue
+            if isinstance(exc, TimeoutError) or "timed out" in str(exc).lower():
+                raise TimeoutFailure(str(exc)) from exc
+            raise TransportFailure(str(exc)) from exc
     try:
         value = json.loads(body)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -542,9 +778,17 @@ def chat_completion(
     base_url: str,
     payload: dict[str, Any],
     timeout: float,
+    max_retries: int = 0,
+    retry_delay: float = 0.5,
+    cancel_event: threading.Event | None = None,
 ) -> str:
     response = _request_json(
-        f"{base_url.rstrip('/')}/v1/chat/completions", payload, timeout
+        f"{base_url.rstrip('/')}/v1/chat/completions",
+        payload,
+        timeout,
+        max_retries=max_retries,
+        retry_delay=retry_delay,
+        cancel_event=cancel_event,
     )
     try:
         content = response["choices"][0]["message"]["content"]
@@ -559,7 +803,11 @@ def check_qwen(
     record: dict[str, Any],
     call: Callable[[dict[str, Any]], str],
     model: str,
+    cancel_event: threading.Event | None = None,
 ) -> CheckOutcome:
+    if cancel_event is not None and cancel_event.is_set():
+        raise KeyboardInterrupt("cancelled")
+    _check_cancellation()
     payload = make_chat_payload(build_source_messages(record), model, 128)
     try:
         raw = call(payload)
@@ -573,17 +821,25 @@ def check_qwen(
         return CheckOutcome(None, (), False, (), (f"transport: {exc}",))
     except ParseFailure as exc:
         return CheckOutcome(None, (), False, (), (f"parse: {exc}",))
+    except Exception as exc:
+        return CheckOutcome(
+            None, (), False, (), (f"other: {type(exc).__name__}: {exc}",)
+        )
 
 
 def check_shieldstral(
     record: dict[str, Any],
     call: Callable[[dict[str, Any]], str],
     model: str,
+    cancel_event: threading.Event | None = None,
 ) -> CheckOutcome:
     categories: list[str] = []
     raw_outputs: list[str] = []
     errors: list[str] = []
     for category, query in SHIELDSTRAL_POLICIES:
+        if cancel_event is not None and cancel_event.is_set():
+            raise KeyboardInterrupt("cancelled")
+        _check_cancellation()
         payload = make_chat_payload(build_shieldstral_messages(record, query), model, 1)
         try:
             raw = call(payload)
@@ -596,6 +852,8 @@ def check_shieldstral(
             errors.append(f"transport: {exc}")
         except ParseFailure as exc:
             errors.append(f"parse: {exc}")
+        except Exception as exc:
+            errors.append(f"other: {type(exc).__name__}: {exc}")
     if errors:
         return CheckOutcome(None, tuple(categories), False, tuple(raw_outputs), tuple(errors))
     safe = not categories
@@ -739,6 +997,22 @@ def compute_frame_summary(
     return summary
 
 
+def categorize_error(error_str: str) -> str:
+    """Categorize an error string into 'timeout', 'transport', 'parse', or 'other'."""
+    prefix = error_str.split(":", 1)[0].strip().lower()
+    if prefix.startswith("timeout"):
+        return "timeout"
+    if (
+        prefix.startswith("transport")
+        or prefix in ("connection", "http", "incompleteread")
+        or "incompleteread" in error_str.lower()
+    ):
+        return "transport"
+    if prefix.startswith("parse") or prefix == "json":
+        return "parse"
+    return "other"
+
+
 def compute_metrics(
     records: Sequence[dict[str, Any]],
     outcomes: Sequence[CheckOutcome],
@@ -769,7 +1043,7 @@ def compute_metrics(
         if not outcome.operational_safe:
             operational_blocked += 1
         for error in outcome.errors:
-            error_counts[error.split(":", 1)[0]] += 1
+            error_counts[categorize_error(error)] += 1
 
         if record["expected_safe"]:
             incorrect = predicted_unsafe or failed
@@ -837,7 +1111,11 @@ def compute_metrics(
         and prompt_self_harm[0] / prompt_self_harm[1] >= 0.95
         and reply_self_harm[0] / reply_self_harm[1] >= 0.95
     )
-    effective_valid = run_valid and not any(error_counts.values())
+    effective_valid = (
+        run_valid
+        and not any(error_counts.values())
+        and all(outcome.safe is not None for outcome in outcomes)
+    )
     if not effective_valid:
         qualifies = False
 
@@ -861,6 +1139,7 @@ def compute_metrics(
             "safety_recall": render_cells(safety_cells),
         },
         "errors": {
+            "other_failures": error_counts["other"],
             "parse_failures": error_counts["parse"],
             "timeouts": error_counts["timeout"],
             "transport_failures": error_counts["transport"],
@@ -890,33 +1169,156 @@ def run_closed_loop(
     records: Sequence[dict[str, Any]],
     checker: Callable[[dict[str, Any]], CheckOutcome],
     clients: int = DEFAULT_CLIENTS,
+    checkpoint_path: Path | None = None,
+    candidate_name: str = "",
+    corpus_sha256: str = "",
+    model_file_sha256: str = "",
+    server_config: dict[str, Any] | None = None,
+    resume: bool = True,
+    retry_errors: bool = False,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[list[CheckOutcome], list[float], float]:
     if clients < 1:
         raise ValueError("clients must be positive")
-    next_index = 0
-    lock = threading.Lock()
     results: list[CheckOutcome | None] = [None] * len(records)
     latencies = [0.0] * len(records)
+    completed_items: dict[str, dict[str, Any]] = {}
+    prior_elapsed = 0.0
+
+    if checkpoint_path is not None and resume:
+        loaded = load_checkpoint(
+            checkpoint_path,
+            candidate_name=candidate_name or None,
+            corpus_sha256=corpus_sha256 or None,
+            model_file_sha256=model_file_sha256 or None,
+            server_config=server_config,
+        )
+        if loaded is not None:
+            prior_elapsed = float(loaded.get("elapsed_seconds", 0.0))
+            items_data = loaded.get("items", {})
+            for idx, record in enumerate(records):
+                rid = record["id"]
+                if rid in items_data:
+                    item = items_data[rid]
+                    has_errors = bool(item.get("errors"))
+                    completed_items[rid] = item
+                    if has_errors and retry_errors:
+                        continue
+                    outcome, lat = outcome_from_dict(item)
+                    results[idx] = outcome
+                    latencies[idx] = lat
+            loaded_count = sum(1 for r in results if r is not None)
+            if loaded_count > 0:
+                pending_count = len(records) - loaded_count
+                sys.stderr.write(
+                    f"Resuming candidate '{candidate_name}' from checkpoint: {loaded_count} items loaded, {pending_count} pending\n"
+                )
+                sys.stderr.flush()
+
+    pending_indices = [i for i in range(len(records)) if results[i] is None]
+
+    if not pending_indices:
+        return [r for r in results if r is not None], latencies, prior_elapsed
+
+    next_pending = 0
+    lock = threading.Lock()
+    checkpoint_lock = threading.Lock()
+    if cancel_event is None:
+        cancel_event = threading.Event()
+    run_started = time.perf_counter()
+    last_save_time = run_started
 
     def client_loop() -> None:
-        nonlocal next_index
-        while True:
+        nonlocal next_pending, last_save_time
+        while not cancel_event.is_set():
             with lock:
-                if next_index >= len(records):
+                if cancel_event.is_set() or next_pending >= len(pending_indices):
                     return
-                index = next_index
-                next_index += 1
+                idx = pending_indices[next_pending]
+                next_pending += 1
+            record = records[idx]
             started = time.perf_counter()
-            results[index] = checker(records[index])
-            latencies[index] = time.perf_counter() - started
+            try:
+                outcome = checker(record)
+            except (KeyboardInterrupt, SystemExit):
+                cancel_event.set()
+                raise
+            except Exception as exc:
+                outcome = CheckOutcome(
+                    None,
+                    (),
+                    False,
+                    (),
+                    (f"other: {type(exc).__name__}: {exc}",),
+                )
+            if cancel_event.is_set():
+                return
+            item_latency = time.perf_counter() - started
+            results[idx] = outcome
+            latencies[idx] = item_latency
 
-    started = time.perf_counter()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=clients) as executor:
+            if checkpoint_path is not None:
+                item_dict = outcome_to_dict(outcome, item_latency)
+                with checkpoint_lock:
+                    if cancel_event.is_set():
+                        return
+                    completed_items[record["id"]] = item_dict
+                    now = time.perf_counter()
+                    if now - last_save_time >= 0.5 or next_pending >= len(pending_indices):
+                        current_elapsed = prior_elapsed + (now - run_started)
+                        save_checkpoint(
+                            checkpoint_path,
+                            candidate_name=candidate_name,
+                            corpus_sha256=corpus_sha256,
+                            model_file_sha256=model_file_sha256,
+                            server_config=server_config,
+                            total_records=len(records),
+                            completed_items=completed_items,
+                            elapsed_seconds=current_elapsed,
+                        )
+                        last_save_time = now
+
+    total_elapsed = prior_elapsed
+
+    def flush_checkpoint() -> None:
+        nonlocal total_elapsed
+        now = time.perf_counter()
+        total_elapsed = prior_elapsed + (now - run_started)
+        if checkpoint_path is not None:
+            with checkpoint_lock:
+                save_checkpoint(
+                    checkpoint_path,
+                    candidate_name=candidate_name,
+                    corpus_sha256=corpus_sha256,
+                    model_file_sha256=model_file_sha256,
+                    server_config=server_config,
+                    total_records=len(records),
+                    completed_items=completed_items,
+                    elapsed_seconds=total_elapsed,
+                )
+
+    global _ACTIVE_CANCEL_EVENT
+    _ACTIVE_CANCEL_EVENT = cancel_event
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=clients)
+    interrupted = False
+    try:
         futures = [executor.submit(client_loop) for _ in range(clients)]
         for future in futures:
             future.result()
-    elapsed = time.perf_counter() - started
-    return [result for result in results if result is not None], latencies, elapsed
+    except BaseException:
+        interrupted = True
+        cancel_event.set()
+        flush_checkpoint()
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise
+    finally:
+        cancel_event.set()
+        if not interrupted:
+            executor.shutdown(wait=True, cancel_futures=True)
+            flush_checkpoint()
+            _ACTIVE_CANCEL_EVENT = None
+
+    return [result for result in results if result is not None], latencies, total_elapsed
 
 
 def _latency_subset_key(record: dict[str, Any]) -> tuple[str, str]:
@@ -1254,20 +1656,27 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def resolve_executable(path: Path) -> Path:
-    if path.is_file():
-        return path.resolve()
+def resolve_executable(path: Path | str) -> Path:
+    p = Path(path)
+    if p.is_file():
+        return p.resolve()
     resolved = shutil.which(str(path))
     if resolved is None:
         raise ValidationError(f"executable not found: {path}")
     return Path(resolved).resolve()
 
 
-def apply_template(base_url: str, messages: list[dict[str, str]], timeout: float) -> str:
+def apply_template(
+    base_url: str,
+    messages: list[dict[str, str]],
+    timeout: float,
+    max_retries: int = 0,
+) -> str:
     response = _request_json(
         f"{base_url.rstrip('/')}/apply-template",
         {"messages": messages, "add_generation_prompt": True},
         timeout,
+        max_retries=max_retries,
     )
     prompt = response.get("prompt")
     if not isinstance(prompt, str):
@@ -1295,7 +1704,10 @@ def run_candidate(
     records: Sequence[dict[str, Any]],
     args: argparse.Namespace,
     help_text: str,
+    model_sha: str | None = None,
 ) -> dict[str, Any]:
+    server_path = resolve_executable(server_path)
+    cancel_event = threading.Event()
     command = build_server_command(
         server_path,
         model_path,
@@ -1320,13 +1732,26 @@ def run_candidate(
         validate_cpu_only_log(startup_log)
 
         def call(payload):
-            return chat_completion(base_url, payload, args.timeout)
+            if cancel_event.is_set():
+                raise KeyboardInterrupt("cancelled")
+            return chat_completion(
+                base_url,
+                payload,
+                args.timeout,
+                max_retries=getattr(args, "max_retries", 0),
+                cancel_event=cancel_event,
+            )
 
         if spec.adapter == "qwen":
             fixed = qwen_template_fixture_records(records)
             for record in fixed:
                 messages, expected = qwen_template_fixture_case(record)
-                actual = apply_template(base_url, messages, args.timeout)
+                actual = apply_template(
+                    base_url,
+                    messages,
+                    args.timeout,
+                    max_retries=getattr(args, "max_retries", 0),
+                )
                 validate_template_evidence(messages, expected, actual)
                 template_evidence.append(
                     {
@@ -1339,12 +1764,17 @@ def run_candidate(
                 )
 
             def checker(record):
-                return check_qwen(record, call, spec.name)
+                return check_qwen(record, call, spec.name, cancel_event=cancel_event)
         else:
             fixed_reply = next(record for record in records if record["role"] == "reply")
             query = SHIELDSTRAL_POLICIES[0][1]
             messages = build_shieldstral_messages(fixed_reply, query)
-            actual = apply_template(base_url, messages, args.timeout)
+            actual = apply_template(
+                base_url,
+                messages,
+                args.timeout,
+                max_retries=getattr(args, "max_retries", 0),
+            )
             validate_shieldstral_template_evidence(fixed_reply, actual)
             template_evidence.append(
                 {
@@ -1357,12 +1787,47 @@ def run_candidate(
             )
 
             def checker(record):
-                return check_shieldstral(record, call, spec.name)
+                return check_shieldstral(record, call, spec.name, cancel_event=cancel_event)
+
+        corpus_sha = file_sha256(args.corpus)
+        if model_sha is None:
+            model_sha = file_sha256(model_path)
+        server_sha = file_sha256(server_path)
+        server_config = {
+            "cache_type_k": args.cache_type_k,
+            "cache_type_v": args.cache_type_v,
+            "clients": args.clients,
+            "context_limit_per_client": args.context_size,
+            "help_sha256": hashlib.sha256(help_text.encode()).hexdigest(),
+            "max_retries": getattr(args, "max_retries", 0),
+            "server_sha256": server_sha,
+            "threads": args.threads,
+            "timeout_seconds": args.timeout,
+        }
+        checkpoint_path = None
+        if not getattr(args, "no_checkpoint", False):
+            checkpoint_path = resolve_checkpoint_path(
+                getattr(args, "checkpoint", None),
+                getattr(args, "output", None),
+                spec.name,
+            )
 
         warmup = checker(next(record for record in records if record["expected_safe"]))
         if warmup.errors:
             raise ValidationError(f"warmup failed: {warmup.errors}")
-        outcomes, latencies, elapsed = run_closed_loop(records, checker, args.clients)
+        outcomes, latencies, elapsed = run_closed_loop(
+            records,
+            checker,
+            clients=args.clients,
+            checkpoint_path=checkpoint_path,
+            candidate_name=spec.name,
+            corpus_sha256=corpus_sha,
+            model_file_sha256=model_sha,
+            server_config=server_config,
+            resume=getattr(args, "resume", True),
+            retry_errors=getattr(args, "retry_errors", False),
+            cancel_event=cancel_event,
+        )
         metrics = compute_metrics(records, outcomes, latencies, elapsed)
         item_results = [
             {
@@ -1382,7 +1847,7 @@ def run_candidate(
             "metrics": metrics,
             "model": {
                 "filename": model_path.name,
-                "sha256": file_sha256(model_path),
+                "sha256": model_sha,
             },
             "server": {
                 "command": command,
@@ -1391,12 +1856,14 @@ def run_candidate(
                     "cache_type_v": args.cache_type_v,
                     "clients": args.clients,
                     "context_limit_per_client": args.context_size,
+                    "max_retries": getattr(args, "max_retries", 0),
                     "samplers": SAMPLER_SETTINGS,
                     "threads": args.threads,
                     "timeout_seconds": args.timeout,
                 },
                 "help_sha256": hashlib.sha256(help_text.encode()).hexdigest(),
                 "help_text": help_text,
+                "sha256": server_sha,
             },
             "template_evidence": template_evidence,
         }
@@ -1444,13 +1911,14 @@ def _compact_template_evidence(
     records: Sequence[dict[str, Any]],
     base_url: str,
     timeout: float,
+    max_retries: int = 0,
 ) -> list[dict[str, Any]]:
     evidence: list[dict[str, Any]] = []
     if spec.adapter == "qwen":
         fixed = qwen_template_fixture_records(records)
         for record in fixed:
             messages, expected = qwen_template_fixture_case(record)
-            actual = apply_template(base_url, messages, timeout)
+            actual = apply_template(base_url, messages, timeout, max_retries=max_retries)
             validate_template_evidence(messages, expected, actual)
             evidence.append(
                 {
@@ -1465,7 +1933,7 @@ def _compact_template_evidence(
         fixed_reply = next(record for record in records if record["role"] == "reply")
         query = SHIELDSTRAL_POLICIES[0][1]
         messages = build_shieldstral_messages(fixed_reply, query)
-        actual = apply_template(base_url, messages, timeout)
+        actual = apply_template(base_url, messages, timeout, max_retries=max_retries)
         validate_shieldstral_template_evidence(fixed_reply, actual)
         evidence.append(
             {
@@ -1558,10 +2026,20 @@ def run_latency_pass(
             )
             state["cpu_proof"] = cpu_only_proof(startup_log)
             state["template_evidence"] = _compact_template_evidence(
-                state["spec"], records, state["base_url"], args.timeout
+                state["spec"],
+                records,
+                state["base_url"],
+                args.timeout,
+                max_retries=getattr(args, "max_retries", 0),
             )
+
             def call(payload, base_url=state["base_url"]):
-                return chat_completion(base_url, payload, args.timeout)
+                return chat_completion(
+                    base_url,
+                    payload,
+                    args.timeout,
+                    max_retries=getattr(args, "max_retries", 0),
+                )
 
             if state["spec"].adapter == "qwen":
 
@@ -1654,6 +2132,7 @@ def run_latency_pass(
                         "cache_type_v": args.cache_type_v,
                         "clients": args.clients,
                         "context_limit_per_client": args.context_size,
+                        "max_retries": getattr(args, "max_retries", 0),
                         "port": state["port"],
                         "samplers": SAMPLER_SETTINGS,
                         "threads": args.threads,
@@ -1695,6 +2174,16 @@ def _parse_candidate(value: str) -> tuple[str, Path]:
     return name, Path(raw_path)
 
 
+def _non_negative_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid integer: {value!r}") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError(f"cannot be negative: {value!r}")
+    return parsed
+
+
 def command_validate(args: argparse.Namespace) -> int:
     records = load_corpus(args.corpus)
     print(canonical_json(validate_corpus(records)), end="")
@@ -1702,10 +2191,28 @@ def command_validate(args: argparse.Namespace) -> int:
 
 
 def command_run(args: argparse.Namespace) -> int:
+    candidate_names = [name for name, _path in args.candidate]
+    duplicate_names = sorted(name for name, count in Counter(candidate_names).items() if count > 1)
+    if duplicate_names:
+        raise ValidationError(f"candidate names must be unique; duplicates={duplicate_names}")
+    if getattr(args, "checkpoint", None) is not None and len(args.candidate) > 1:
+        raw_ckpt = str(args.checkpoint)
+        is_directory = (
+            args.checkpoint.is_dir()
+            or raw_ckpt.endswith(("/", "\\"))
+            or not args.checkpoint.suffix
+        )
+        if not is_directory and "{candidate}" not in raw_ckpt:
+            raise ValidationError(
+                "--checkpoint must be a directory or include '{candidate}' when evaluating multiple candidates"
+            )
     records = load_corpus(args.corpus)
     corpus_report = validate_corpus(records)
+    current_corpus_sha = file_sha256(args.corpus)
+    server_path = resolve_executable(args.llama_server)
+    current_server_sha = file_sha256(server_path)
     help_process = subprocess.run(
-        [str(args.llama_server), "--help"],
+        [str(server_path), "--help"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         check=False,
@@ -1714,57 +2221,156 @@ def command_run(args: argparse.Namespace) -> int:
     if help_process.returncode != 0:
         raise ValidationError(f"llama-server --help exited {help_process.returncode}")
     results: list[dict[str, Any]] = []
+    completed_candidate_names: set[str] = set()
+    requested_candidates = dict(args.candidate)
+    model_shas = {name: file_sha256(path) for name, path in args.candidate}
+
+    if getattr(args, "resume", True) and args.output.is_file():
+        try:
+            existing_doc = json.loads(args.output.read_text(encoding="utf-8"))
+            if not isinstance(existing_doc, dict):
+                raise ValidationError(f"{args.output} is not a valid JSON document")
+            doc_corpus_sha = existing_doc.get("corpus", {}).get("sha256")
+            if doc_corpus_sha != current_corpus_sha:
+                sys.stderr.write(
+                    f"Not reusing {args.output}: corpus sha256 mismatch (output: {doc_corpus_sha}, current: {current_corpus_sha})\n"
+                )
+                sys.stderr.flush()
+            else:
+                expected_ids = {r["id"] for r in records}
+                for res in existing_doc.get("results", []):
+                    c_info = res.get("candidate", {})
+                    c_name = c_info.get("name")
+                    if c_name not in requested_candidates:
+                        continue
+                    model_path = requested_candidates[c_name]
+                    spec = CANDIDATES.get(c_name)
+                    if spec is None or c_info.get("adapter") != spec.adapter:
+                        continue
+                    current_model_sha = model_shas[c_name]
+                    if res.get("model", {}).get("sha256") != current_model_sha:
+                        continue
+                    cfg = res.get("server", {}).get("config", {})
+                    if (
+                        cfg.get("cache_type_k") != args.cache_type_k
+                        or cfg.get("cache_type_v") != args.cache_type_v
+                        or cfg.get("clients") != args.clients
+                        or cfg.get("context_limit_per_client") != args.context_size
+                        or cfg.get("max_retries", 0) != getattr(args, "max_retries", 0)
+                        or cfg.get("threads") != args.threads
+                        or cfg.get("timeout_seconds") != args.timeout
+                    ):
+                        continue
+                    expected_help_sha = hashlib.sha256(help_process.stdout.encode()).hexdigest()
+                    if res.get("server", {}).get("help_sha256") != expected_help_sha:
+                        continue
+                    if res.get("server", {}).get("sha256") != current_server_sha:
+                        continue
+                    res_items = res.get("items", [])
+                    if len(res_items) != len(records):
+                        continue
+                    res_ids = {it.get("id") for it in res_items}
+                    if res_ids != expected_ids:
+                        continue
+                    items_valid = True
+                    has_missing_or_error = False
+                    for it in res_items:
+                        if not isinstance(it, dict) or "safe" not in it:
+                            items_valid = False
+                            break
+                        safe_val = it["safe"]
+                        errs = it.get("errors", [])
+                        if safe_val is not None and type(safe_val) is not bool:
+                            items_valid = False
+                            break
+                        if safe_val is None:
+                            has_missing_or_error = True
+                            if not errs:
+                                items_valid = False
+                                break
+                        elif errs:
+                            has_missing_or_error = True
+                    if not items_valid:
+                        continue
+                    qual = res.get("metrics", {}).get("qualification", {})
+                    if not isinstance(qual, dict):
+                        continue
+                    run_valid_claimed = qual.get("run_valid")
+                    if type(run_valid_claimed) is not bool:
+                        continue
+                    if run_valid_claimed and has_missing_or_error:
+                        continue
+                    has_errors = any(it.get("errors") for it in res_items)
+                    if has_errors and getattr(args, "retry_errors", False):
+                        continue
+                    results.append(res)
+                    completed_candidate_names.add(c_name)
+                    sys.stderr.write(
+                        f"Reusing completed candidate '{c_name}' results from {args.output}\n"
+                    )
+                    sys.stderr.flush()
+        except Exception as exc:
+            sys.stderr.write(f"Warning: could not read existing output {args.output} for reuse: {exc}\n")
+            sys.stderr.flush()
+
     for name, model_path in args.candidate:
+        if name in completed_candidate_names:
+            continue
         spec = CANDIDATES[name]
         if model_path.name != spec.expected_filename:
             raise ValidationError(
                 f"{name} expected filename {spec.expected_filename}, got {model_path.name}"
             )
-        results.append(
-            run_candidate(
-                spec,
-                model_path,
-                args.llama_server,
-                records,
-                args,
-                help_process.stdout,
-            )
+        candidate_result = run_candidate(
+            spec,
+            model_path,
+            server_path,
+            records,
+            args,
+            help_process.stdout,
+            model_sha=model_shas[name],
         )
-    document = {
-        "corpus": {
-            "path": str(args.corpus),
-            "sha256": file_sha256(args.corpus),
-            "validation": corpus_report,
-        },
-        "environment": {
-            "cpu_count": os.cpu_count(),
-            "machine": platform.machine(),
-            "platform": platform.platform(),
-            "processor": platform.processor(),
-            "python": platform.python_version(),
-        },
-        "format_version": 1,
-        "methodology": {
-            "clients": DEFAULT_CLIENTS,
-            "concurrency": "bounded closed-loop",
-            "latency": "client-observed time from request start through the complete guard verdict, including server queueing",
-            "production_note": "Production reply-segment prefill can be longer than corpus replies.",
-            "shieldstral_calls_per_complete_check": len(SHIELDSTRAL_POLICIES),
-        },
-        "policy": {
-            "project_categories": list(PROJECT_CATEGORIES),
-            "qwen_category_map": QWEN_CATEGORY_MAP,
-            "shieldstral_instruction": SHIELDSTRAL_INSTRUCTION,
-            "shieldstral_policies": [
-                {"category": category, "query": query}
-                for category, query in SHIELDSTRAL_POLICIES
-            ],
-            "shieldstral_system_prompt": SHIELDSTRAL_SYSTEM_PROMPT,
-        },
-        "results": results,
-    }
-    args.output.write_text(canonical_json(document), encoding="utf-8")
-    return int(any(not result["metrics"]["qualification"]["run_valid"] for result in results))
+        results.append(candidate_result)
+        document = {
+            "corpus": {
+                "path": str(args.corpus),
+                "sha256": current_corpus_sha,
+                "validation": corpus_report,
+            },
+            "environment": {
+                "cpu_count": os.cpu_count(),
+                "machine": platform.machine(),
+                "platform": platform.platform(),
+                "processor": platform.processor(),
+                "python": platform.python_version(),
+            },
+            "format_version": 1,
+            "methodology": {
+                "clients": DEFAULT_CLIENTS,
+                "concurrency": "bounded closed-loop",
+                "latency": "client-observed time from request start through the complete guard verdict, including server queueing",
+                "production_note": "Production reply-segment prefill can be longer than corpus replies.",
+                "shieldstral_calls_per_complete_check": len(SHIELDSTRAL_POLICIES),
+            },
+            "policy": {
+                "project_categories": list(PROJECT_CATEGORIES),
+                "qwen_category_map": QWEN_CATEGORY_MAP,
+                "shieldstral_instruction": SHIELDSTRAL_INSTRUCTION,
+                "shieldstral_policies": [
+                    {"category": category, "query": query}
+                    for category, query in SHIELDSTRAL_POLICIES
+                ],
+                "shieldstral_system_prompt": SHIELDSTRAL_SYSTEM_PROMPT,
+            },
+            "results": results,
+        }
+        save_output_document(args.output, document)
+    return int(
+        any(
+            result.get("metrics", {}).get("qualification", {}).get("run_valid") is not True
+            for result in results
+        )
+    )
 
 
 def command_latency(args: argparse.Namespace) -> int:
@@ -1848,6 +2454,36 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--port", type=int, default=8091)
     run.add_argument("--startup-timeout", type=float, default=120.0)
     run.add_argument("--threads", type=int, default=max(1, os.cpu_count() or 1))
+    run.add_argument(
+        "--checkpoint",
+        type=Path,
+        default=None,
+        help="path to checkpoint file (default: <output_stem>.<candidate>.checkpoint.json)",
+    )
+    run.add_argument(
+        "--no-checkpoint",
+        action="store_true",
+        default=False,
+        help="disable checkpoint persistence",
+    )
+    run.add_argument(
+        "--resume",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="resume from existing checkpoint if present (default: true)",
+    )
+    run.add_argument(
+        "--retry-errors",
+        action="store_true",
+        default=False,
+        help="re-evaluate items that previously failed with errors when resuming",
+    )
+    run.add_argument(
+        "--max-retries",
+        type=_non_negative_int,
+        default=0,
+        help="retries per request on transient network or timeout errors (default: 0)",
+    )
     run.set_defaults(
         clients=DEFAULT_CLIENTS,
         function=command_run,
@@ -1870,6 +2506,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     latency.add_argument("--startup-timeout", type=float, default=120.0)
     latency.add_argument("--threads", type=int, default=max(1, os.cpu_count() or 1))
+    latency.add_argument(
+        "--max-retries",
+        type=_non_negative_int,
+        default=0,
+        help="retries per request on transient network or timeout errors (default: 0)",
+    )
     latency.set_defaults(
         clients=DEFAULT_CLIENTS,
         function=command_latency,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import subprocess
 import threading
 import time
 import unittest
@@ -492,7 +493,15 @@ class MetricsTests(unittest.TestCase):
         ]
         metrics = guard.compute_metrics(records, outcomes, [1, 2, 3, 4], 2)
         self.assertEqual(metrics["capability"]["confusion"], {"fn": 1, "fp": 1, "tn": 1, "tp": 1})
-        self.assertEqual(metrics["errors"], {"parse_failures": 1, "timeouts": 1, "transport_failures": 0})
+        self.assertEqual(
+            metrics["errors"],
+            {
+                "other_failures": 0,
+                "parse_failures": 1,
+                "timeouts": 1,
+                "transport_failures": 0,
+            },
+        )
         self.assertEqual(metrics["operational"]["blocked"], 3)
         self.assertEqual(metrics["latency_seconds"]["p50_complete_check"], 2)
         self.assertEqual(metrics["latency_seconds"]["p95_complete_check"], 4)
@@ -749,6 +758,1178 @@ class LatencyPassTests(unittest.TestCase):
                 "transport_failures": 1,
             },
         )
+
+
+class CheckpointAndFaultHandlingTests(unittest.TestCase):
+    def test_outcome_serialization_round_trip(self):
+        original = guard.CheckOutcome(
+            safe=True,
+            categories=("Violent",),
+            operational_safe=True,
+            raw_outputs=("Safety: Unsafe",),
+            errors=(),
+        )
+        d = guard.outcome_to_dict(original, 1.25)
+        self.assertEqual(d["safe"], True)
+        self.assertEqual(d["categories"], ["Violent"])
+        self.assertEqual(d["latency_seconds"], 1.25)
+        restored, lat = guard.outcome_from_dict(d)
+        self.assertEqual(restored, original)
+        self.assertEqual(lat, 1.25)
+
+    def test_save_and_load_checkpoint_round_trip(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ckpt_path = Path(tmp_dir) / "test.checkpoint.json"
+            items = {
+                "r-1": {
+                    "categories": [],
+                    "errors": [],
+                    "latency_seconds": 0.5,
+                    "operational_safe": True,
+                    "raw_outputs": ["out1"],
+                    "safe": True,
+                }
+            }
+            guard.save_checkpoint(ckpt_path, "qwen-0.6b", "sha123", 10, items, 1.5)
+            self.assertTrue(ckpt_path.is_file())
+            loaded = guard.load_checkpoint(ckpt_path, "qwen-0.6b", "sha123")
+            self.assertIsNotNone(loaded)
+            self.assertEqual(loaded["candidate"], "qwen-0.6b")
+            self.assertEqual(loaded["corpus_sha256"], "sha123")
+            self.assertEqual(loaded["total_records"], 10)
+            self.assertEqual(loaded["completed_count"], 1)
+            self.assertEqual(loaded["elapsed_seconds"], 1.5)
+            self.assertEqual(loaded["items"], items)
+
+    def test_load_checkpoint_validation_and_corruption_handling(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ckpt_path = Path(tmp_dir) / "corrupt.json"
+            self.assertIsNone(guard.load_checkpoint(Path(tmp_dir) / "nonexistent.json"))
+            ckpt_path.write_text("invalid json content", encoding="utf-8")
+            self.assertIsNone(guard.load_checkpoint(ckpt_path))
+            guard.save_checkpoint(ckpt_path, "qwen-0.6b", "sha123", 5, {}, 0.0)
+            self.assertIsNone(guard.load_checkpoint(ckpt_path, candidate_name="qwen-4b"))
+            self.assertIsNone(guard.load_checkpoint(ckpt_path, corpus_sha256="sha999"))
+            self.assertIsNotNone(
+                guard.load_checkpoint(
+                    ckpt_path, candidate_name="qwen-0.6b", corpus_sha256="sha123"
+                )
+            )
+            # Schema validation
+            doc = json.loads(ckpt_path.read_text(encoding="utf-8"))
+            doc["format_version"] = 999
+            ckpt_path.write_text(json.dumps(doc), encoding="utf-8")
+            self.assertIsNone(guard.load_checkpoint(ckpt_path))
+
+            doc["format_version"] = 1
+            doc["items"] = None
+            ckpt_path.write_text(json.dumps(doc), encoding="utf-8")
+            self.assertIsNone(guard.load_checkpoint(ckpt_path))
+
+            doc["items"] = {"row-1": None}
+            ckpt_path.write_text(json.dumps(doc), encoding="utf-8")
+            self.assertIsNone(guard.load_checkpoint(ckpt_path))
+
+            doc["items"] = {}
+            doc["elapsed_seconds"] = -10.0
+            ckpt_path.write_text(json.dumps(doc), encoding="utf-8")
+            self.assertIsNone(guard.load_checkpoint(ckpt_path))
+
+            doc["elapsed_seconds"] = "not_a_number"
+            ckpt_path.write_text(json.dumps(doc), encoding="utf-8")
+            self.assertIsNone(guard.load_checkpoint(ckpt_path))
+
+            doc["elapsed_seconds"] = True
+            ckpt_path.write_text(json.dumps(doc), encoding="utf-8")
+            self.assertIsNone(guard.load_checkpoint(ckpt_path))
+
+            # Full configuration and model identity binding
+            guard.save_checkpoint(
+                ckpt_path,
+                "qwen-0.6b",
+                "sha123",
+                5,
+                {},
+                1.0,
+                model_file_sha256="model_sha_abc",
+                server_config={"threads": 8, "clients": 30},
+            )
+            self.assertIsNotNone(
+                guard.load_checkpoint(
+                    ckpt_path,
+                    "qwen-0.6b",
+                    "sha123",
+                    model_file_sha256="model_sha_abc",
+                    server_config={"threads": 8, "clients": 30},
+                )
+            )
+            self.assertIsNone(
+                guard.load_checkpoint(
+                    ckpt_path,
+                    "qwen-0.6b",
+                    "sha123",
+                    model_file_sha256="different_model_sha",
+                )
+            )
+            self.assertIsNone(
+                guard.load_checkpoint(
+                    ckpt_path,
+                    "qwen-0.6b",
+                    "sha123",
+                    server_config={"threads": 4, "clients": 30},
+                )
+            )
+
+            # Item consistency: missing safe or safe=None without errors must return None
+            valid_item = {
+                "categories": [],
+                "errors": [],
+                "latency_seconds": 0.1,
+                "operational_safe": True,
+                "raw_outputs": [],
+                "safe": True,
+            }
+            guard.save_checkpoint(
+                ckpt_path,
+                "qwen-0.6b",
+                "sha123",
+                1,
+                {"row-0": valid_item},
+                1.0,
+                model_file_sha256="model_sha_abc",
+                server_config={"help_sha256": "help_sha_123"},
+            )
+            self.assertIsNotNone(
+                guard.load_checkpoint(
+                    ckpt_path,
+                    "qwen-0.6b",
+                    "sha123",
+                    server_config={"help_sha256": "help_sha_123"},
+                )
+            )
+            self.assertIsNone(
+                guard.load_checkpoint(
+                    ckpt_path,
+                    "qwen-0.6b",
+                    "sha123",
+                    server_config={"help_sha256": "different_help_sha"},
+                )
+            )
+
+            # server_sha256 validation
+            guard.save_checkpoint(
+                ckpt_path,
+                "qwen-0.6b",
+                "sha123",
+                1,
+                {"row-0": valid_item},
+                1.0,
+                model_file_sha256="model_sha_abc",
+                server_config={"server_sha256": "server_sha_abc"},
+            )
+            self.assertIsNotNone(
+                guard.load_checkpoint(
+                    ckpt_path,
+                    "qwen-0.6b",
+                    "sha123",
+                    server_config={"server_sha256": "server_sha_abc"},
+                )
+            )
+            self.assertIsNone(
+                guard.load_checkpoint(
+                    ckpt_path,
+                    "qwen-0.6b",
+                    "sha123",
+                    server_config={"server_sha256": "different_server_sha"},
+                )
+            )
+
+            # max_retries validation
+            guard.save_checkpoint(
+                ckpt_path,
+                "qwen-0.6b",
+                "sha123",
+                1,
+                {"row-0": valid_item},
+                1.0,
+                model_file_sha256="model_sha_abc",
+                server_config={"max_retries": 3},
+            )
+            self.assertIsNotNone(
+                guard.load_checkpoint(
+                    ckpt_path,
+                    "qwen-0.6b",
+                    "sha123",
+                    server_config={"max_retries": 3},
+                )
+            )
+            self.assertIsNone(
+                guard.load_checkpoint(
+                    ckpt_path,
+                    "qwen-0.6b",
+                    "sha123",
+                    server_config={"max_retries": 0},
+                )
+            )
+
+            # Missing safe key
+            item_no_safe = dict(valid_item)
+            del item_no_safe["safe"]
+            doc = json.loads(ckpt_path.read_text(encoding="utf-8"))
+            doc["items"]["row-0"] = item_no_safe
+            ckpt_path.write_text(json.dumps(doc), encoding="utf-8")
+            self.assertIsNone(guard.load_checkpoint(ckpt_path))
+
+            # safe=None without errors is inconsistent
+            item_inconsistent = dict(valid_item)
+            item_inconsistent["safe"] = None
+            item_inconsistent["errors"] = []
+            doc["items"]["row-0"] = item_inconsistent
+            ckpt_path.write_text(json.dumps(doc), encoding="utf-8")
+            self.assertIsNone(guard.load_checkpoint(ckpt_path))
+
+    def test_resolve_checkpoint_path(self):
+        output = Path("output/results.json")
+        resolved = guard.resolve_checkpoint_path(None, output, "qwen-0.6b")
+        self.assertEqual(resolved, Path("output/results.qwen-0.6b.checkpoint.json"))
+        resolved_dir = guard.resolve_checkpoint_path(
+            Path("checkpoints/"), output, "shieldstral"
+        )
+        self.assertEqual(resolved_dir, Path("checkpoints/shieldstral.checkpoint.json"))
+        resolved_file = guard.resolve_checkpoint_path(
+            Path("custom.json"), output, "qwen-0.6b"
+        )
+        self.assertEqual(resolved_file, Path("custom.json"))
+        resolved_tmpl = guard.resolve_checkpoint_path(
+            Path("ckpt-{candidate}.json"), output, "qwen-4b"
+        )
+        self.assertEqual(resolved_tmpl, Path("ckpt-qwen-4b.json"))
+
+    def test_run_closed_loop_persists_checkpoints_and_resumes(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ckpt_path = Path(tmp_dir) / "run.checkpoint.json"
+            records = [sample_record(id=f"row-{i}", text=f"text {i}") for i in range(10)]
+            called_pass1 = []
+
+            def checker_pass1(record):
+                idx = int(record["id"].split("-")[1])
+                if idx == 5:
+                    raise KeyboardInterrupt("simulated operator interrupt")
+                called_pass1.append(idx)
+                return guard.CheckOutcome(True, (), True, (record["id"],), ())
+
+            with self.assertRaises(KeyboardInterrupt):
+                guard.run_closed_loop(
+                    records,
+                    checker_pass1,
+                    clients=1,
+                    checkpoint_path=ckpt_path,
+                    candidate_name="test-model",
+                    corpus_sha256="sha",
+                )
+
+            self.assertTrue(ckpt_path.is_file())
+            loaded = guard.load_checkpoint(ckpt_path, "test-model", "sha")
+            self.assertIsNotNone(loaded)
+            self.assertEqual(len(loaded["items"]), 5)
+            self.assertEqual(set(loaded["items"].keys()), {f"row-{i}" for i in range(5)})
+
+            called_pass2 = []
+
+            def checker_pass2(record):
+                called_pass2.append(record["id"])
+                return guard.CheckOutcome(True, (), True, (record["id"],), ())
+
+            outcomes, latencies, elapsed = guard.run_closed_loop(
+                records,
+                checker_pass2,
+                clients=2,
+                checkpoint_path=ckpt_path,
+                candidate_name="test-model",
+                corpus_sha256="sha",
+                resume=True,
+            )
+            self.assertEqual(len(outcomes), 10)
+            self.assertEqual(len(latencies), 10)
+            self.assertEqual(set(called_pass2), {f"row-{i}" for i in range(5, 10)})
+            final_loaded = guard.load_checkpoint(ckpt_path, "test-model", "sha")
+            self.assertEqual(len(final_loaded["items"]), 10)
+
+    def test_interrupted_inflight_items_not_persisted_as_failures(self):
+        import tempfile
+        import threading
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ckpt_path = Path(tmp_dir) / "inflight.checkpoint.json"
+            records = [sample_record(id=f"row-{i}") for i in range(4)]
+            inflight_entered = threading.Event()
+            interrupt_raised = threading.Event()
+            cancel_event = threading.Event()
+
+            def checker(record):
+                idx = int(record["id"].split("-")[1])
+                if idx == 0:
+                    return guard.CheckOutcome(True, (), True, (record["id"],), ())
+                if idx == 1:
+                    inflight_entered.set()
+                    interrupt_raised.wait(timeout=2.0)
+                    cancel_event.wait(timeout=2.0)
+                    return guard.CheckOutcome(None, (), False, (), ("transport: socket closed",))
+                if idx == 2:
+                    inflight_entered.wait(timeout=2.0)
+                    interrupt_raised.set()
+                    raise KeyboardInterrupt("simulated operator interrupt")
+                return guard.CheckOutcome(True, (), True, (record["id"],), ())
+
+            with self.assertRaises(KeyboardInterrupt):
+                guard.run_closed_loop(
+                    records,
+                    checker,
+                    clients=2,
+                    checkpoint_path=ckpt_path,
+                    candidate_name="test-model",
+                    corpus_sha256="sha",
+                    cancel_event=cancel_event,
+                )
+
+            self.assertTrue(ckpt_path.is_file())
+            loaded = guard.load_checkpoint(ckpt_path, "test-model", "sha")
+            self.assertIsNotNone(loaded)
+            self.assertEqual(list(loaded["items"].keys()), ["row-0"])
+            self.assertTrue(loaded["items"]["row-0"]["safe"])
+
+    def test_run_closed_loop_retries_errors_when_requested(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ckpt_path = Path(tmp_dir) / "errors.checkpoint.json"
+            records = [sample_record(id=f"row-{i}") for i in range(4)]
+            items = {
+                "row-0": {
+                    "categories": [],
+                    "errors": [],
+                    "latency_seconds": 0.1,
+                    "operational_safe": True,
+                    "raw_outputs": [],
+                    "safe": True,
+                },
+                "row-1": {
+                    "categories": [],
+                    "errors": ["timeout: 300s"],
+                    "latency_seconds": 300.0,
+                    "operational_safe": False,
+                    "raw_outputs": [],
+                    "safe": None,
+                },
+            }
+            guard.save_checkpoint(ckpt_path, "test", "sha", 4, items, 300.1)
+
+            called = []
+
+            def tracking_checker(r):
+                called.append(r["id"])
+                return guard.CheckOutcome(True, (), True, (), ())
+
+            outcomes, _, _ = guard.run_closed_loop(
+                records,
+                tracking_checker,
+                clients=1,
+                checkpoint_path=ckpt_path,
+                candidate_name="test",
+                corpus_sha256="sha",
+                resume=True,
+                retry_errors=False,
+            )
+            self.assertNotIn("row-1", called)
+            self.assertIsNone(outcomes[1].safe)
+
+            called.clear()
+            outcomes, _, _ = guard.run_closed_loop(
+                records,
+                tracking_checker,
+                clients=1,
+                checkpoint_path=ckpt_path,
+                candidate_name="test",
+                corpus_sha256="sha",
+                resume=True,
+                retry_errors=True,
+            )
+            self.assertIn("row-1", called)
+            self.assertTrue(outcomes[1].safe)
+
+    def test_interrupted_retry_errors_preserves_prior_failure(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ckpt_path = Path(tmp_dir) / "retry_interrupt.checkpoint.json"
+            records = [sample_record(id="row-0"), sample_record(id="row-1")]
+            items = {
+                "row-0": {
+                    "categories": [],
+                    "errors": [],
+                    "latency_seconds": 0.1,
+                    "operational_safe": True,
+                    "raw_outputs": [],
+                    "safe": True,
+                },
+                "row-1": {
+                    "categories": [],
+                    "errors": ["timeout: 300s"],
+                    "latency_seconds": 300.0,
+                    "operational_safe": False,
+                    "raw_outputs": [],
+                    "safe": None,
+                },
+            }
+            guard.save_checkpoint(ckpt_path, "test", "sha", 2, items, 300.1)
+
+            def interrupting_checker(r):
+                if r["id"] == "row-1":
+                    raise KeyboardInterrupt("interrupted during retry")
+                return guard.CheckOutcome(True, (), True, (), ())
+
+            with self.assertRaises(KeyboardInterrupt):
+                guard.run_closed_loop(
+                    records,
+                    interrupting_checker,
+                    clients=1,
+                    checkpoint_path=ckpt_path,
+                    candidate_name="test",
+                    corpus_sha256="sha",
+                    resume=True,
+                    retry_errors=True,
+                )
+
+            loaded = guard.load_checkpoint(ckpt_path, "test", "sha")
+            self.assertIsNotNone(loaded)
+            self.assertIn("row-0", loaded["items"])
+            self.assertIn("row-1", loaded["items"])
+            self.assertEqual(loaded["items"]["row-1"]["errors"], ["timeout: 300s"])
+            self.assertIsNone(loaded["items"]["row-1"]["safe"])
+
+    def test_run_closed_loop_catches_checker_exceptions_gracefully(self):
+        records = [sample_record(id="row-fail"), sample_record(id="row-ok")]
+
+        def failing_checker(record):
+            if record["id"] == "row-fail":
+                raise ConnectionResetError("connection reset by peer")
+            return guard.CheckOutcome(True, (), True, ("ok",), ())
+
+        outcomes, latencies, elapsed = guard.run_closed_loop(
+            records, failing_checker, clients=2
+        )
+        self.assertEqual(len(outcomes), 2)
+        self.assertFalse(outcomes[0].operational_safe)
+        self.assertIsNone(outcomes[0].safe)
+        self.assertTrue(any("ConnectionResetError" in err for err in outcomes[0].errors))
+        self.assertTrue(outcomes[1].operational_safe)
+        self.assertTrue(outcomes[1].safe)
+
+    def test_categorize_error(self):
+        self.assertEqual(guard.categorize_error("timeout: 300s exceeded"), "timeout")
+        self.assertEqual(guard.categorize_error("timeout"), "timeout")
+        self.assertEqual(guard.categorize_error("transport: HTTP 503"), "transport")
+        self.assertEqual(guard.categorize_error("connection: broken pipe"), "transport")
+        self.assertEqual(guard.categorize_error("parse: invalid json"), "parse")
+        self.assertEqual(guard.categorize_error("json: decode error"), "parse")
+        self.assertEqual(guard.categorize_error("other: MemoryError"), "other")
+        self.assertEqual(guard.categorize_error("unknown failure"), "other")
+
+    def test_check_qwen_and_shieldstral_catch_unexpected_exceptions(self):
+        def crashing_call(payload):
+            raise ArithmeticError("unexpected math error")
+
+        qwen_res = guard.check_qwen(sample_record(), crashing_call, "qwen")
+        self.assertFalse(qwen_res.operational_safe)
+        self.assertIsNone(qwen_res.safe)
+        self.assertTrue(any("ArithmeticError" in e for e in qwen_res.errors))
+
+        shield_res = guard.check_shieldstral(sample_record(), crashing_call, "shieldstral")
+        self.assertFalse(shield_res.operational_safe)
+        self.assertIsNone(shield_res.safe)
+        self.assertTrue(any("ArithmeticError" in e for e in shield_res.errors))
+
+    def test_run_cli_parses_resumability_and_retry_flags(self):
+        parser = guard.build_parser()
+        args = parser.parse_args(
+            [
+                "run",
+                "tests/guard_set.jsonl",
+                "out.json",
+                "--candidate",
+                "qwen-0.6b=Qwen3Guard-Gen-0.6B.Q8_0.gguf",
+                "--llama-server",
+                "llama-server",
+                "--checkpoint",
+                "custom.ckpt.json",
+                "--retry-errors",
+                "--max-retries",
+                "3",
+            ]
+        )
+        self.assertEqual(args.checkpoint, Path("custom.ckpt.json"))
+        self.assertTrue(args.resume)
+        self.assertTrue(args.retry_errors)
+        self.assertEqual(args.max_retries, 3)
+
+        no_resume_args = parser.parse_args(
+            [
+                "run",
+                "tests/guard_set.jsonl",
+                "out.json",
+                "--candidate",
+                "qwen-0.6b=Qwen3Guard-Gen-0.6B.Q8_0.gguf",
+                "--llama-server",
+                "llama-server",
+                "--no-resume",
+                "--no-checkpoint",
+            ]
+        )
+        self.assertFalse(no_resume_args.resume)
+        self.assertTrue(no_resume_args.no_checkpoint)
+
+        latency_args = parser.parse_args(
+            [
+                "latency",
+                "tests/guard_set.jsonl",
+                "out.json",
+                "--candidate",
+                "qwen-0.6b=Qwen3Guard-Gen-0.6B.Q8_0.gguf",
+                "--candidate",
+                "qwen-4b=Qwen3Guard-Gen-4B.Q8_0.gguf",
+                "--candidate",
+                "shieldstral=ShieldGemma-2B.Q8_0.gguf",
+                "--llama-server",
+                "llama-server",
+                "--max-retries",
+                "5",
+            ]
+        )
+        self.assertEqual(latency_args.max_retries, 5)
+
+        with self.assertRaises(SystemExit):
+            parser.parse_args(
+                [
+                    "run",
+                    "tests/guard_set.jsonl",
+                    "out.json",
+                    "--candidate",
+                    "qwen-0.6b=Qwen3Guard-Gen-0.6B.Q8_0.gguf",
+                    "--llama-server",
+                    "llama-server",
+                    "--max-retries",
+                    "-1",
+                ]
+            )
+
+    def test_request_json_retries_transient_failures(self):
+        from unittest.mock import MagicMock, patch
+
+        attempts = 0
+
+        def mock_urlopen(request, timeout):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise TimeoutError("simulated timeout")
+            resp = MagicMock()
+            resp.read.return_value = b'{"status": "ok"}'
+            resp.__enter__.return_value = resp
+            return resp
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+            data = guard._request_json(
+                "http://test", {}, timeout=1.0, max_retries=2, retry_delay=0.001
+            )
+            self.assertEqual(data, {"status": "ok"})
+            self.assertEqual(attempts, 2)
+
+        with patch(
+            "urllib.request.urlopen", side_effect=TimeoutError("permanent timeout")
+        ):
+            with self.assertRaises(guard.TimeoutFailure):
+                guard._request_json(
+                    "http://test", {}, timeout=1.0, max_retries=1, retry_delay=0.001
+                )
+
+        # IncompleteRead is retried and raises TransportFailure if exhausted
+        import http.client
+
+        incomplete_attempts = 0
+
+        def mock_urlopen_incompleteread(request, timeout):
+            nonlocal incomplete_attempts
+            incomplete_attempts += 1
+            if incomplete_attempts == 1:
+                resp = MagicMock()
+                resp.read.side_effect = http.client.IncompleteRead(b"partial")
+                resp.__enter__.return_value = resp
+                return resp
+            resp = MagicMock()
+            resp.read.return_value = b'{"status": "recovered"}'
+            resp.__enter__.return_value = resp
+            return resp
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen_incompleteread):
+            data = guard._request_json(
+                "http://test", {}, timeout=1.0, max_retries=2, retry_delay=0.001
+            )
+            self.assertEqual(data, {"status": "recovered"})
+            self.assertEqual(incomplete_attempts, 2)
+
+        def mock_urlopen_permanent_incomplete(request, timeout):
+            resp = MagicMock()
+            resp.read.side_effect = http.client.IncompleteRead(b"bad")
+            resp.__enter__.return_value = resp
+            return resp
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen_permanent_incomplete):
+            with self.assertRaises(guard.TransportFailure):
+                guard._request_json(
+                    "http://test", {}, timeout=1.0, max_retries=1, retry_delay=0.001
+                )
+
+        # URLError wrapping TimeoutError must raise TimeoutFailure on exhaustion
+        import urllib.error
+
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=urllib.error.URLError(TimeoutError("connection timed out")),
+        ):
+            with self.assertRaises(guard.TimeoutFailure):
+                guard._request_json(
+                    "http://test", {}, timeout=1.0, max_retries=0, retry_delay=0.001
+                )
+
+
+    def test_compute_metrics_includes_other_failures(self):
+        records = [sample_record(id="r1"), sample_record(id="r2")]
+        outcomes = [
+            outcome(True),
+            guard.CheckOutcome(None, (), False, (), ("other: RuntimeError: crash",)),
+        ]
+        metrics = guard.compute_metrics(records, outcomes, [1.0, 1.0], 2.0)
+        self.assertEqual(metrics["errors"]["other_failures"], 1)
+        self.assertEqual(metrics["errors"]["timeouts"], 0)
+        self.assertEqual(metrics["errors"]["transport_failures"], 0)
+        self.assertEqual(metrics["errors"]["parse_failures"], 0)
+        self.assertFalse(metrics["qualification"]["run_valid"])
+
+    def test_compute_metrics_missing_verdict_invalidates_run(self):
+        records = [sample_record(id="r1")]
+        outcomes = [
+            guard.CheckOutcome(
+                safe=None,
+                categories=(),
+                operational_safe=False,
+                raw_outputs=(),
+                errors=(),
+            )
+        ]
+        metrics = guard.compute_metrics(records, outcomes, [1.0], 1.0)
+        self.assertFalse(metrics["qualification"]["run_valid"])
+
+    def test_multi_candidate_checkpoint_requires_template_or_dir(self):
+        from unittest.mock import patch
+
+        parser = guard.build_parser()
+        args = parser.parse_args(
+            [
+                "run",
+                "tests/guard_set.jsonl",
+                "out.json",
+                "--candidate",
+                "qwen-0.6b=Qwen3Guard-Gen-0.6B.Q8_0.gguf",
+                "--candidate",
+                "qwen-4b=Qwen3Guard-Gen-4B.Q8_0.gguf",
+                "--llama-server",
+                "llama-server",
+                "--checkpoint",
+                "shared.checkpoint.json",
+            ]
+        )
+        orig_run = subprocess.run
+
+        def fake_run(cmd, *a, **kw):
+            if cmd and "llama-server" in str(cmd[0]):
+                return subprocess.CompletedProcess(cmd, returncode=0, stdout="help")
+            return orig_run(cmd, *a, **kw)
+
+        with patch("tests.guard_bakeoff.subprocess.run", side_effect=fake_run):
+            with self.assertRaises(guard.ValidationError) as ctx:
+                guard.command_run(args)
+            self.assertIn("must be a directory or include '{candidate}'", str(ctx.exception))
+
+    def test_command_run_output_reuse_and_identity_validation(self):
+        import io
+        import tempfile
+        from unittest.mock import patch
+
+        orig_run = subprocess.run
+
+        def fake_run(cmd, *a, **kw):
+            if cmd and "llama-server" in str(cmd[0]):
+                return subprocess.CompletedProcess(cmd, returncode=0, stdout="help")
+            return orig_run(cmd, *a, **kw)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            corpus_path = tmp / "corpus.jsonl"
+            records = [sample_record(id="row-0"), sample_record(id="row-1")]
+            corpus_path.write_text(
+                "".join(guard.compact_json(r) for r in records), encoding="utf-8"
+            )
+            corpus_sha = guard.file_sha256(corpus_path)
+
+            model_path = tmp / "Qwen3Guard-Gen-0.6B.Q8_0.gguf"
+            model_path.write_bytes(b"fake model bytes")
+            model_sha = guard.file_sha256(model_path)
+
+            fake_server = tmp / "fake-llama-server"
+            fake_server.write_bytes(b"fake server binary bytes")
+            server_sha = guard.file_sha256(fake_server)
+
+            output_path = tmp / "out.json"
+
+            _DEFAULT = object()
+
+            def make_valid_doc(
+                c_sha=corpus_sha,
+                m_sha=model_sha,
+                s_sha=server_sha,
+                errors=(),
+                run_valid=None,
+                safe_val=_DEFAULT,
+            ):
+                import os
+
+                if run_valid is None:
+                    run_valid = not errors
+                row0_safe = (not errors) if safe_val is _DEFAULT else safe_val
+                return {
+                    "corpus": {"path": str(corpus_path), "sha256": c_sha, "validation": {}},
+                    "results": [
+                        {
+                            "candidate": {"adapter": "qwen", "name": "qwen-0.6b"},
+                            "items": [
+                                {
+                                    "id": "row-0",
+                                    "safe": row0_safe,
+                                    "verdict": ["safe"] if row0_safe else [],
+                                    "errors": list(errors),
+                                },
+                                {
+                                    "id": "row-1",
+                                    "safe": True,
+                                    "verdict": ["safe"],
+                                    "errors": [],
+                                },
+                            ],
+                            "metrics": {"qualification": {"run_valid": run_valid}},
+                            "model": {"filename": model_path.name, "sha256": m_sha},
+                            "server": {
+                                "config": {
+                                    "cache_type_k": "f16",
+                                    "cache_type_v": "f16",
+                                    "clients": guard.DEFAULT_CLIENTS,
+                                    "context_limit_per_client": 4096,
+                                    "max_retries": 0,
+                                    "threads": max(1, os.cpu_count() or 1),
+                                    "timeout_seconds": guard.DEFAULT_TIMEOUT_SECONDS,
+                                },
+                                "help_sha256": hashlib.sha256(b"help").hexdigest(),
+                                "sha256": s_sha,
+                            },
+                        }
+                    ],
+                }
+
+            # 1. Matching doc -> reused, run_candidate NOT called
+            output_path.write_text(json.dumps(make_valid_doc()), encoding="utf-8")
+            parser = guard.build_parser()
+            args = parser.parse_args(
+                [
+                    "run",
+                    str(corpus_path),
+                    str(output_path),
+                    "--candidate",
+                    f"qwen-0.6b={model_path}",
+                    "--llama-server",
+                    str(fake_server),
+                ]
+            )
+            with patch("tests.guard_bakeoff.subprocess.run", side_effect=fake_run), patch(
+                "tests.guard_bakeoff.validate_corpus", return_value={"validation": "ok"}
+            ), patch(
+                "tests.guard_bakeoff.run_candidate"
+            ) as mock_run_cand, patch("sys.stderr", new_callable=io.StringIO) as mock_stderr:
+                ret = guard.command_run(args)
+                self.assertEqual(ret, 0)
+                mock_run_cand.assert_not_called()
+                self.assertIn("Reusing completed candidate 'qwen-0.6b'", mock_stderr.getvalue())
+
+            # 2. Corpus sha mismatch -> not reused, run_candidate CALLED
+            output_path.write_text(
+                json.dumps(make_valid_doc(c_sha="different_sha")), encoding="utf-8"
+            )
+            with patch("tests.guard_bakeoff.subprocess.run", side_effect=fake_run), patch(
+                "tests.guard_bakeoff.validate_corpus", return_value={"validation": "ok"}
+            ), patch(
+                "tests.guard_bakeoff.run_candidate"
+            ) as mock_run_cand, patch("sys.stderr", new_callable=io.StringIO) as mock_stderr:
+                mock_run_cand.return_value = make_valid_doc()["results"][0]
+                ret = guard.command_run(args)
+                mock_run_cand.assert_called_once()
+                self.assertIn("corpus sha256 mismatch", mock_stderr.getvalue())
+
+            # 3. Model sha mismatch -> not reused, run_candidate CALLED
+            output_path.write_text(
+                json.dumps(make_valid_doc(m_sha="different_model_sha")), encoding="utf-8"
+            )
+            with patch("tests.guard_bakeoff.subprocess.run", side_effect=fake_run), patch(
+                "tests.guard_bakeoff.validate_corpus", return_value={"validation": "ok"}
+            ), patch(
+                "tests.guard_bakeoff.run_candidate"
+            ) as mock_run_cand:
+                mock_run_cand.return_value = make_valid_doc()["results"][0]
+                ret = guard.command_run(args)
+                mock_run_cand.assert_called_once()
+
+            # 4. Server binary sha mismatch -> not reused, run_candidate CALLED
+            output_path.write_text(
+                json.dumps(make_valid_doc(s_sha="different_server_sha")), encoding="utf-8"
+            )
+            with patch("tests.guard_bakeoff.subprocess.run", side_effect=fake_run), patch(
+                "tests.guard_bakeoff.validate_corpus", return_value={"validation": "ok"}
+            ), patch(
+                "tests.guard_bakeoff.run_candidate"
+            ) as mock_run_cand:
+                mock_run_cand.return_value = make_valid_doc()["results"][0]
+                ret = guard.command_run(args)
+                mock_run_cand.assert_called_once()
+
+            # 5. Item errors with --retry-errors -> not reused, run_candidate CALLED
+            output_path.write_text(
+                json.dumps(make_valid_doc(errors=["timeout: 300s"], safe_val=None)),
+                encoding="utf-8",
+            )
+            args_retry = parser.parse_args(
+                [
+                    "run",
+                    str(corpus_path),
+                    str(output_path),
+                    "--candidate",
+                    f"qwen-0.6b={model_path}",
+                    "--llama-server",
+                    str(fake_server),
+                    "--retry-errors",
+                ]
+            )
+            with patch("tests.guard_bakeoff.subprocess.run", side_effect=fake_run), patch(
+                "tests.guard_bakeoff.validate_corpus", return_value={"validation": "ok"}
+            ), patch(
+                "tests.guard_bakeoff.run_candidate"
+            ) as mock_run_cand:
+                mock_run_cand.return_value = make_valid_doc()["results"][0]
+                ret = guard.command_run(args_retry)
+                mock_run_cand.assert_called_once()
+
+            # 6. Claimed run_valid=True when items have errors -> not reused, run_candidate CALLED
+            output_path.write_text(
+                json.dumps(make_valid_doc(errors=["timeout: 300s"], run_valid=True)),
+                encoding="utf-8",
+            )
+            with patch("tests.guard_bakeoff.subprocess.run", side_effect=fake_run), patch(
+                "tests.guard_bakeoff.validate_corpus", return_value={"validation": "ok"}
+            ), patch(
+                "tests.guard_bakeoff.run_candidate"
+            ) as mock_run_cand:
+                mock_run_cand.return_value = make_valid_doc()["results"][0]
+                ret = guard.command_run(args)
+                mock_run_cand.assert_called_once()
+
+            # 7. safe=None without errors -> not reused, run_candidate CALLED
+            output_path.write_text(
+                json.dumps(make_valid_doc(safe_val=None, errors=())), encoding="utf-8"
+            )
+            with patch("tests.guard_bakeoff.subprocess.run", side_effect=fake_run), patch(
+                "tests.guard_bakeoff.validate_corpus", return_value={"validation": "ok"}
+            ), patch(
+                "tests.guard_bakeoff.run_candidate"
+            ) as mock_run_cand:
+                mock_run_cand.return_value = make_valid_doc()["results"][0]
+                ret = guard.command_run(args)
+                mock_run_cand.assert_called_once()
+
+            # 8. Malformed run_valid (string 'false') -> not reused, run_candidate CALLED
+            output_path.write_text(
+                json.dumps(make_valid_doc(run_valid="false")), encoding="utf-8"
+            )
+            with patch("tests.guard_bakeoff.subprocess.run", side_effect=fake_run), patch(
+                "tests.guard_bakeoff.validate_corpus", return_value={"validation": "ok"}
+            ), patch(
+                "tests.guard_bakeoff.run_candidate"
+            ) as mock_run_cand:
+                mock_run_cand.return_value = make_valid_doc()["results"][0]
+                ret = guard.command_run(args)
+                mock_run_cand.assert_called_once()
+
+            # 9. max_retries config mismatch -> not reused, run_candidate CALLED
+            doc_retries = make_valid_doc()
+            doc_retries["results"][0]["server"]["config"]["max_retries"] = 5
+            output_path.write_text(json.dumps(doc_retries), encoding="utf-8")
+            with patch("tests.guard_bakeoff.subprocess.run", side_effect=fake_run), patch(
+                "tests.guard_bakeoff.validate_corpus", return_value={"validation": "ok"}
+            ), patch(
+                "tests.guard_bakeoff.run_candidate"
+            ) as mock_run_cand:
+                mock_run_cand.return_value = make_valid_doc()["results"][0]
+                ret = guard.command_run(args)
+                mock_run_cand.assert_called_once()
+
+
+    def test_run_candidate_resolves_bare_executable(self):
+        import os
+        import tempfile
+        from unittest.mock import MagicMock, patch
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            fake_bin = tmp / "my-llama-server"
+            fake_bin.write_bytes(b"dummy binary")
+            fake_bin.chmod(0o755)
+
+            with patch.dict(os.environ, {"PATH": f"{tmp}:{os.environ.get('PATH', '')}"}):
+                resolved = guard.resolve_executable("my-llama-server")
+                self.assertEqual(resolved, fake_bin.resolve())
+                self.assertEqual(guard.file_sha256(resolved), guard.file_sha256(fake_bin))
+
+                # Verify run_candidate defensively resolves bare executable path
+                spec = guard.CANDIDATES["qwen-0.6b"]
+                fake_model = tmp / spec.expected_filename
+                fake_model.write_bytes(b"dummy model")
+                parser = guard.build_parser()
+                args = parser.parse_args(
+                    [
+                        "run",
+                        "tests/guard_set.jsonl",
+                        str(tmp / "out.json"),
+                        "--candidate",
+                        f"qwen-0.6b={fake_model}",
+                        "--llama-server",
+                        "my-llama-server",
+                    ]
+                )
+                with patch("tests.guard_bakeoff.subprocess.Popen") as mock_popen, patch(
+                    "tests.guard_bakeoff._wait_for_server"
+                ), patch(
+                    "tests.guard_bakeoff.validate_cpu_only_log"
+                ), patch(
+                    "tests.guard_bakeoff.qwen_template_fixture_records", return_value=[sample_record()]
+                ), patch(
+                    "tests.guard_bakeoff.qwen_template_fixture_case", return_value=([], "ok")
+                ), patch(
+                    "tests.guard_bakeoff.validate_template_evidence"
+                ), patch(
+                    "tests.guard_bakeoff.check_qwen",
+                    return_value=guard.CheckOutcome(True, (), True, (), ()),
+                ), patch(
+                    "tests.guard_bakeoff.run_closed_loop",
+                    return_value=([guard.CheckOutcome(True, (), True, (), ())], [0.1], 0.1),
+                ), patch(
+                    "tests.guard_bakeoff.apply_template", return_value="ok"
+                ):
+                    proc = MagicMock()
+                    proc.poll.return_value = None
+                    mock_popen.return_value = proc
+                    res = guard.run_candidate(
+                        spec,
+                        fake_model,
+                        Path("my-llama-server"),
+                        [sample_record()],
+                        args,
+                        help_text="fake help with --no-prefill-assistant --jinja --kv-unified-per-slot",
+                    )
+                    self.assertEqual(res["server"]["sha256"], guard.file_sha256(fake_bin))
+
+    def test_run_closed_loop_interruption_preserves_active_cancel_event(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ckpt = Path(tmp_dir) / "test.ckpt.json"
+            records = [sample_record(id="r0"), sample_record(id="r1"), sample_record(id="r2")]
+            calls_after_cancel = 0
+
+            def checker(record):
+                nonlocal calls_after_cancel
+                if guard._ACTIVE_CANCEL_EVENT is not None and guard._ACTIVE_CANCEL_EVENT.is_set():
+                    calls_after_cancel += 1
+                if record["id"] == "r0":
+                    raise KeyboardInterrupt("simulated cancel")
+                return guard.CheckOutcome(True, (), True, (), ())
+
+            try:
+                with self.assertRaises(KeyboardInterrupt):
+                    guard.run_closed_loop(
+                        records,
+                        checker,
+                        clients=1,
+                        checkpoint_path=ckpt,
+                        candidate_name="test",
+                        corpus_sha256="sha",
+                    )
+                self.assertIsNotNone(guard._ACTIVE_CANCEL_EVENT)
+                self.assertTrue(guard._ACTIVE_CANCEL_EVENT.is_set())
+                self.assertEqual(calls_after_cancel, 0)
+            finally:
+                guard._ACTIVE_CANCEL_EVENT = None
+
+    def test_cancellation_aborts_retry_backoff_immediately(self):
+        cancel_evt = threading.Event()
+        guard._ACTIVE_CANCEL_EVENT = cancel_evt
+        try:
+            cancel_evt.set()
+            start = time.perf_counter()
+            with self.assertRaises(KeyboardInterrupt):
+                guard._interruptible_sleep(10.0)
+            elapsed = time.perf_counter() - start
+            self.assertLess(elapsed, 0.5)
+
+            with self.assertRaises(KeyboardInterrupt):
+                guard._check_cancellation()
+        finally:
+            guard._ACTIVE_CANCEL_EVENT = None
+
+    def test_request_json_aborts_immediately_on_cancellation_during_retry(self):
+        from unittest.mock import patch
+
+        cancel_evt = threading.Event()
+        guard._ACTIVE_CANCEL_EVENT = cancel_evt
+        attempts = 0
+
+        def mock_urlopen(request, timeout):
+            nonlocal attempts
+            attempts += 1
+            cancel_evt.set()
+            raise TimeoutError("simulated timeout")
+
+        try:
+            with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+                start = time.perf_counter()
+                with self.assertRaises(KeyboardInterrupt):
+                    guard._request_json(
+                        "http://test", {}, timeout=1.0, max_retries=5, retry_delay=5.0
+                    )
+                elapsed = time.perf_counter() - start
+                self.assertLess(elapsed, 0.5)
+                self.assertEqual(attempts, 1)
+        finally:
+            guard._ACTIVE_CANCEL_EVENT = None
+
+
+    def test_backoff_sleep_single_wait(self):
+        from unittest.mock import patch
+
+        cancel_evt = threading.Event()
+        with patch.object(cancel_evt, "wait", return_value=False) as mock_wait, patch(
+            "time.sleep"
+        ) as mock_sleep, patch("random.uniform", return_value=1.0):
+            guard._backoff_sleep(attempt=0, retry_delay=0.5, cancel_event=cancel_evt)
+            mock_wait.assert_called_once_with(0.5)
+            mock_sleep.assert_not_called()
+
+    def test_run_candidate_reuses_provided_model_sha(self):
+        from unittest.mock import MagicMock, patch
+
+        spec = guard.CANDIDATES["qwen-0.6b"]
+        fake_model = Path("/fake/model.gguf")
+        fake_bin = Path("/fake/bin/llama-server")
+        parser = guard.build_parser()
+        args = parser.parse_args(
+            [
+                "run",
+                "tests/guard_set.jsonl",
+                "/fake/output.json",
+                "--candidate",
+                f"qwen-0.6b={fake_model}",
+                "--llama-server",
+                str(fake_bin),
+            ]
+        )
+
+        with patch("tests.guard_bakeoff.file_sha256") as mock_sha, patch(
+            "tests.guard_bakeoff.resolve_executable", return_value=fake_bin
+        ), patch(
+            "tests.guard_bakeoff.subprocess.Popen"
+        ) as mock_popen, patch(
+            "tests.guard_bakeoff._wait_for_server"
+        ), patch(
+            "tests.guard_bakeoff.validate_cpu_only_log"
+        ), patch(
+            "tests.guard_bakeoff.qwen_template_fixture_records", return_value=[sample_record()]
+        ), patch(
+            "tests.guard_bakeoff.qwen_template_fixture_case", return_value=([], "ok")
+        ), patch(
+            "tests.guard_bakeoff.validate_template_evidence"
+        ), patch(
+            "tests.guard_bakeoff.check_qwen",
+            return_value=guard.CheckOutcome(True, (), True, (), ()),
+        ), patch(
+            "tests.guard_bakeoff.run_closed_loop",
+            return_value=([guard.CheckOutcome(True, (), True, (), ())], [0.1], 0.1),
+        ), patch(
+            "tests.guard_bakeoff.apply_template", return_value="ok"
+        ):
+            mock_sha.side_effect = lambda p: f"sha_of_{Path(p).name}"
+            proc = MagicMock()
+            proc.poll.return_value = None
+            mock_popen.return_value = proc
+
+            res = guard.run_candidate(
+                spec,
+                fake_model,
+                fake_bin,
+                [sample_record()],
+                args,
+                help_text="fake help with --no-prefill-assistant --jinja --kv-unified-per-slot",
+                model_sha="precomputed_model_sha_123",
+            )
+            self.assertEqual(res["model"]["sha256"], "precomputed_model_sha_123")
+            # Verify file_sha256 was NOT called on fake_model
+            model_calls = [
+                call_args[0][0]
+                for call_args in mock_sha.call_args_list
+                if Path(call_args[0][0]) == fake_model
+            ]
+            self.assertEqual(model_calls, [])
+
+    def test_command_run_rejects_duplicate_candidates(self):
+        fake_model1 = Path("/fake/model1.gguf")
+        fake_model2 = Path("/fake/model2.gguf")
+        parser = guard.build_parser()
+        args = parser.parse_args(
+            [
+                "run",
+                "tests/guard_set.jsonl",
+                "/fake/output.json",
+                "--candidate",
+                f"qwen-0.6b={fake_model1}",
+                "--candidate",
+                f"qwen-0.6b={fake_model2}",
+                "--llama-server",
+                "llama-server",
+            ]
+        )
+        with self.assertRaises(guard.ValidationError) as ctx:
+            guard.command_run(args)
+        self.assertIn("candidate names must be unique", str(ctx.exception))
+        self.assertIn("qwen-0.6b", str(ctx.exception))
 
 
 if __name__ == "__main__":
