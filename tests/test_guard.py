@@ -3,9 +3,9 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from app.guard import (ActionResolution, CheckResult, Context, GuardUnavailable,
-                       ReplyGate, parse_qwen_verdict, resolve_actions,
-                       run_check, request_verdict, verdict_from)
+from app.guard import (ActionResolution, CheckResult, Context, GUARD_TIMEOUT_SECONDS,
+                       GuardUnavailable, ReplyGate, Verdict, parse_qwen_verdict,
+                       resolve_actions, run_check, request_verdict, verdict_from)
 from tests.fakes import fake_guard
 
 
@@ -203,3 +203,180 @@ async def test_reply_segments_stop_at_300_before_a_later_sentence_end():
     assert [len(segment) for segment in gate.segments] == [300, 51]
     assert first == "x" * 350 + "."
     assert tail == ""
+
+
+# --- Lifecycle and boundary tests (cai-1ir.58) ---
+
+
+async def test_prompt_verdict_deadline_margin_below_stale_window():
+    """Verify GUARD_TIMEOUT_SECONDS configures transport operations with a 60-second
+    threshold, providing an expected 60-second margin below chat.PENDING_STALE_MINUTES
+    (120s user sweep), and that the configured timeout is explicitly propagated
+    to the HTTP transport."""
+    import time
+    from app import chat
+
+    stale_sweep_seconds = chat.PENDING_STALE_MINUTES * 60
+    assert stale_sweep_seconds == 120.0
+    assert GUARD_TIMEOUT_SECONDS == 60.0
+
+    margin = stale_sweep_seconds - GUARD_TIMEOUT_SECONDS
+    assert margin == 60.0
+
+    async def hanging_guard(request):
+        assert request.extensions.get("timeout", {}).get("connect") == GUARD_TIMEOUT_SECONDS
+        assert request.extensions.get("timeout", {}).get("read") == GUARD_TIMEOUT_SECONDS
+        raise httpx.ReadTimeout("guard request timed out after 60.0s", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(hanging_guard), timeout=1.0) as client:
+        start = time.monotonic()
+        with pytest.raises(GuardUnavailable, match="valid verdict"):
+            await request_verdict(client, "http://guard", [{"role": "user", "content": "hello"}])
+        elapsed = time.monotonic() - start
+        assert elapsed < 1.0
+
+
+async def test_concurrent_student_admission_with_prompt_verdict_in_flight(app, dsn):
+    """Verify student admission (admit) uses per-student row locks so that
+    concurrent student admissions proceed without blocking each other,
+    while pending rows count toward the submitting student's message limit."""
+    import asyncio
+    from starlette.requests import Request
+    from app import chat
+    from app.auth import HTTPError
+
+    async with app.state.pool.connection() as conn, conn.transaction():
+        cur = await conn.execute(
+            "INSERT INTO staff (username, password_hash, role) VALUES ('teacher-admission', 'hash', 'teacher') RETURNING id"
+        )
+        teacher_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO classes (name, instructions, message_limit, teacher_id) VALUES ('Bio', 'Test', 1, %s) RETURNING id",
+            (teacher_id,),
+        )
+        class_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO lesson_sessions (class_id, state) VALUES (%s, 'open') RETURNING id",
+            (class_id,),
+        )
+        session_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO students (lesson_session_id, code, name, bound_at) VALUES (%s, '111111', 'Student A', now()) RETURNING id",
+            (session_id,),
+        )
+        student_a_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO students (lesson_session_id, code, name, bound_at) VALUES (%s, '222222', 'Student B', now()) RETURNING id",
+            (session_id,),
+        )
+        student_b_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO models (name, enabled) VALUES ('gemma-4-e2b-it', true) ON CONFLICT (name) DO UPDATE SET enabled = true"
+        )
+        cur = await conn.execute(
+            "INSERT INTO conversations (student_id, model) VALUES (%s, 'gemma-4-e2b-it') RETURNING id",
+            (student_a_id,),
+        )
+        conv_a_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO conversations (student_id, model) VALUES (%s, 'gemma-4-e2b-it') RETURNING id",
+            (student_b_id,),
+        )
+        conv_b_id = (await cur.fetchone())[0]
+
+    scope = {"type": "http", "app": app}
+    req = Request(scope)
+
+    # 1. Concurrently admit turns for Student A and Student B via asyncio.gather
+    (msg_a_id, model_a, inst_a, sess_a), (msg_b_id, model_b, inst_b, sess_b) = await asyncio.gather(
+        chat.admit(req, {"id": student_a_id}, conv_a_id, "Prompt from A"),
+        chat.admit(req, {"id": student_b_id}, conv_b_id, "Prompt from B"),
+    )
+    assert msg_a_id > 0
+    assert msg_b_id > 0
+    assert msg_b_id != msg_a_id
+
+    # 2. Student A tries to admit another turn while prompt A is in-flight -> limit reached
+    with pytest.raises(HTTPError) as exc_info:
+        await chat.admit(req, {"id": student_a_id}, conv_a_id, "Second prompt from A")
+    assert exc_info.value.status == 409
+    assert exc_info.value.code == "limit_reached"
+
+    # 3. Finish Student A's prompt verdict via store_verdict -> status transitions from 'pending' to 'ok'
+    verdict = Verdict(action="allow", safe=True, duration_ms=25, raw_response="Safety: Safe\nCategories: None")
+    async with app.state.pool.connection() as conn, conn.transaction():
+        await chat.store_verdict(conn, msg_a_id, verdict, "ok")
+        cur = await conn.execute("SELECT status FROM messages WHERE id = %s", (msg_a_id,))
+        assert (await cur.fetchone())[0] == "ok"
+
+
+async def test_multiple_reply_segments_and_per_segment_timeout_behavior(app, monkeypatch):
+    """Verify ReplyGate splits streaming reply into multiple segments,
+    checks each segment independently, releases approved segments, and fails
+    closed on a per-segment timeout without releasing the timed-out segment."""
+    timeouts = 0
+    checked_calls = []
+
+    async def mock_check(app_, ctx_, reply_text):
+        nonlocal timeouts
+        checked_calls.append(reply_text)
+        if "second sentence" in reply_text.lower():
+            timeouts += 1
+            raise GuardUnavailable("guard request timed out after 60.0s")
+        return Verdict(action="allow", safe=True, duration_ms=12, raw_response="Safety: Safe\nCategories: None")
+
+    async with app.state.pool.connection() as conn, conn.transaction():
+        cur = await conn.execute(
+            "INSERT INTO staff (username, password_hash, role) VALUES ('teacher-segments', 'hash', 'teacher') RETURNING id"
+        )
+        teacher_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO classes (name, instructions, teacher_id) VALUES ('Art', 'Test', %s) RETURNING id",
+            (teacher_id,),
+        )
+        class_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO lesson_sessions (class_id, state) VALUES (%s, 'open') RETURNING id",
+            (class_id,),
+        )
+        session_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO students (lesson_session_id, code, name, bound_at) VALUES (%s, '333333', 'Student C', now()) RETURNING id",
+            (session_id,),
+        )
+        student_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO models (name, enabled) VALUES ('gemma-4-e2b-it', true) ON CONFLICT (name) DO UPDATE SET enabled = true"
+        )
+        cur = await conn.execute(
+            "INSERT INTO conversations (student_id, model) VALUES (%s, 'gemma-4-e2b-it') RETURNING id",
+            (student_id,),
+        )
+        conv_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO messages (conversation_id, role, text, status, shown_length)"
+            " VALUES (%s, 'assistant', '', 'pending', 0) RETURNING id",
+            (conv_id,),
+        )
+        reply_msg_id = (await cur.fetchone())[0]
+
+    ctx = Context(conv_id, student_id, "test user prompt")
+    gate = ReplyGate(app, ctx)
+    gate.bind(reply_msg_id)
+
+    import app.guard as guard_mod
+    monkeypatch.setattr(guard_mod, "check", mock_check)
+
+    released_1 = await gate.feed("First sentence. ")
+    assert released_1 == "First sentence. "
+    assert gate.checked == "First sentence. "
+    assert gate.sequence == 1
+    assert len(gate.verdicts) == 1
+
+    with pytest.raises(GuardUnavailable, match="timed out"):
+        await gate.feed("Second sentence. ")
+
+    assert gate.checked == "First sentence. "
+    assert gate.sequence == 1
+    assert timeouts == 1
+    assert checked_calls == ["First sentence. ", "First sentence. Second sentence. "]

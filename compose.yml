@@ -65,19 +65,21 @@ services:
       - --alias
       - qwen3guard-0.6b
       - --threads
-      - "8"
+      - "${GUARD_THREADS:-8}"
       - --parallel
-      - "30"
+      - "${GUARD_PARALLEL:-30}"
       - --kv-unified-per-slot
       - "4096"
       - --cache-type-k
-      - f16
+      - "${GUARD_CACHE_K:-f16}"
       - --cache-type-v
-      - f16
+      - "${GUARD_CACHE_V:-f16}"
       - --n-gpu-layers
       - "0"
       - --jinja
       - --no-prefill-assistant
+      - --cache-ram
+      - "${GUARD_CACHE_RAM:-0}"
     volumes:
       - guard_models:/models:ro
     networks: [internal]

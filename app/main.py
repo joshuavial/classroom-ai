@@ -70,6 +70,7 @@ def setup_logging() -> None:
         logger.handlers = [handler]
         logger.propagate = False
     logging.getLogger("uvicorn.access").addFilter(DropQueryStrings())
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     # Filters are not inherited. The pool, its schedulers, and the driver
     # loggers each need the same one. psycopg.transaction and psycopg.waiting
     # are separate names, not records on "psycopg".

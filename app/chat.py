@@ -387,7 +387,7 @@ async def reply(app, pool, ctx: guard.Context, student: dict, lesson_id: int, mo
             guard_status = "error"
         elif status == "blocked" and gate and gate.sequence:
             guard_status = "blocked"
-        elif gate and gate.active and (gate.sequence or (status == "ok" and gate.completed)):
+        elif gate and (gate.sequence or (status == "ok" and gate.completed)):
             guard_status = "passed"
         with anyio.CancelScope(shield=True):
             try:

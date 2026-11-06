@@ -5,6 +5,7 @@ check cannot be completed or parsed.
 """
 
 import dataclasses
+import logging
 import re
 import time
 import unicodedata
@@ -14,9 +15,11 @@ from psycopg.types.json import Jsonb
 
 from app.guard_settings import InvalidGuardSettings, normalized_name, validate_document
 
+log = logging.getLogger(__name__)
+
 MAX_RESPONSE_BYTES = 8192
 GUARD_MODEL = "qwen3guard-0.6b"
-GUARD_TIMEOUT_SECONDS = 300
+GUARD_TIMEOUT_SECONDS = 60.0
 PUBLISHED_CATEGORIES = (
     "Violent",
     "Non-violent Illegal Acts",
@@ -210,7 +213,8 @@ async def request_verdict(client: httpx.AsyncClient, url: str, messages: list[di
         content = body["choices"][0]["message"]["content"]
         if not isinstance(content, str) or len(content.encode("utf-8")) > MAX_RESPONSE_BYTES:
             raise ValueError
-    except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError):
+    except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
+        log.warning("guard request failed (%s)", type(exc).__name__)
         raise GuardUnavailable("guard did not return a valid verdict") from None
     return content
 
@@ -259,7 +263,11 @@ async def run_check(app, ctx: Context, reply: str | None = None) -> CheckResult:
     started = time.perf_counter()
     raw = await request_verdict(app.state.guard_client, app.state.guard_url, messages)
     duration_ms = max(0, round((time.perf_counter() - started) * 1000))
-    safe, categories = parse_qwen_verdict(raw, reply is not None)
+    try:
+        safe, categories = parse_qwen_verdict(raw, reply is not None)
+    except GuardUnavailable as exc:
+        log.warning("parse_qwen_verdict failed (%s): len=%d", exc, len(raw) if raw is not None else 0)
+        raise
     return CheckResult(safe, categories, raw, duration_ms)
 
 
@@ -325,10 +333,6 @@ class ReplyGate:
 
     def bind(self, message_id: int) -> None:
         self.message_id = message_id
-
-    @property
-    def active(self) -> bool:
-        return True
 
     async def _release(self, segment: str) -> str:
         if self.message_id is None:
