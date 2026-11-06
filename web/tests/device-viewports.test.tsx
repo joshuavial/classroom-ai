@@ -294,7 +294,7 @@ test("teacher console DOM: session controls, outage banner, card grid, and trans
   // 2. Session bar controls are rendered
   const headings = await screen.findAllByRole("heading", { level: 2, name: "Year 9 Science" });
   expect(headings.length).toBeGreaterThan(0);
-  expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument();
+  expect(await screen.findByRole("button", { name: "Pause" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Close lesson" })).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Print slips" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Generate" })).toBeInTheDocument();
