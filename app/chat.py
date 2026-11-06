@@ -292,6 +292,12 @@ async def send_message(request: Request):
     if not isinstance(text, str) or not 1 <= len(text.strip()) <= MAX_TEXT:
         raise HTTPError(400, "bad_text")
     text = text.strip()
+    if "\x00" in text:
+        raise HTTPError(400, "bad_text")
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        raise HTTPError(400, "bad_text") from None
     app, pool = request.app, request.app.state.pool
 
     message_id, model, instructions, lesson_id = await admit(request, student, conversation_id, text)

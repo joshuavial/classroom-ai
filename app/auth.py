@@ -394,6 +394,14 @@ async def json_fields(request: Request, *names: str) -> dict[str, str]:
     body = await json_body(request)
     if not all(isinstance(body.get(n), str) for n in names):
         raise HTTPError(400, "bad_request")
+    for n in names:
+        val = body[n]
+        if "\x00" in val:
+            raise HTTPError(400, "bad_request")
+        try:
+            val.encode("utf-8")
+        except UnicodeEncodeError:
+            raise HTTPError(400, "bad_request") from None
     return {n: body[n] for n in names}
 
 

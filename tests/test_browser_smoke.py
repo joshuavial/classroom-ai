@@ -57,7 +57,7 @@ runpy.run_module(args[1], run_name="__main__")
 from pathlib import Path
 if "up" not in sys.argv:
     raise SystemExit(0)
-deadline = time.monotonic() + 3
+deadline = time.monotonic() + 8
 while time.monotonic() < deadline:
     connection = http.client.HTTPConnection("127.0.0.1", int(os.environ["FAKE_MODEL_PORT"]), timeout=0.2)
     try:
