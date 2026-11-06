@@ -2,6 +2,8 @@
 
 Checks a person runs by hand, on real devices, before a pilot lesson. Automated tests cover the logic; these cover what only a screen, a finger and a network can show. Record each run in `docs/pilot-checks.md` with the date, devices and result.
 
+Automated Playwright regression coverage in `web/e2e/device-viewports.spec.ts` verifies real browser reflow, sticky header pinning, card multi-column grid reflow, outage banner visibility, and portrait stacking versus landscape side-by-side reflow across 390x844 and 820x1180 viewports. Complementary React component tests in `web/tests/device-viewports.test.tsx` verify DOM structure, accessibility roles, and streaming state lifecycle.
+
 ## Setup
 
 1. Run `./scripts/init-env.sh` once, then start the stack on the Mac with `BIND_ADDRESS=0.0.0.0 docker compose up -d --build`. Use this LAN binding only for an isolated, supervised device check and do not leave the stack running afterward.
