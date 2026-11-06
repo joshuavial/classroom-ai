@@ -338,9 +338,12 @@ workloads. Under closed-loop client concurrency of 30 on CPU without GPU offload
 the server queue reached saturation, causing 936 requests to reach the client
 request timeout limit of 300 seconds. Because the service is configured to fail
 closed on timeout or transport errors, timed-out requests were treated as
-operationally blocked (1,310 total blocked items). Rows with timeouts or transport
-errors do not produce valid verdicts. Consequently, this run is recorded as
-invalid and yields no quality or safety claims.
+operationally blocked (1,310 total blocked items). The completed check throughput
+of 0.1117 checks/s reflects all finished requests including timeouts. In the
+confusion matrix, missing verdicts from timeouts are scored as incorrect, which
+accounts for the 544 false negatives rather than unsafe content being allowed
+through. Because rows with timeouts or transport errors do not produce valid
+verdicts, this run is recorded as invalid and yields no quality or safety claims.
 
 ## Limitations
 
