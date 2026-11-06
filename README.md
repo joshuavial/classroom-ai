@@ -26,6 +26,7 @@ Then open `https://classroom.school.lan` from another machine on the network, an
 - [Architecture](docs/architecture.md) and [decision records](docs/adr/README.md): how it will be built.
 - [Implementation plan](docs/implementation-plan.md): the ordered build steps for the lab pilot.
 - [Manual tests](docs/manual-tests.md): hand checks on real devices before a pilot lesson.
+- [Capacity and load baseline](docs/capacity.md): load testing harness architecture, baseline execution parameters, and initial measurements.
 - [Research](docs/research/summary.md): the evidence behind these choices.
 
 ## Licence

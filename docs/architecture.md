@@ -317,7 +317,7 @@ How the live view is built (`app/live.py`, step 7):
 - Caddy root-certificate integration: `uv run pytest tests/test_caddy_root_certificate.py` starts the pinned Caddy image with a local fake authorization/upstream server and a disposable Caddy data volume. It checks the generated root's exact bytes, the exact admin download route, authorization, method handling, conditional and range requests, a missing root, path variants, key refusal and an unrelated route.
 - One smoke test boots the real compose stack with an agent in front of a local model server running Gemma 4 E2B, joins a student, and checks a reply arrives and appears in the teacher stream. Run on demand on the Mac, not in every test run.
 - Guard check: a fixed list of test prompts per enabled category run against the real guard (acceptance 7), on demand.
-- Load test: `tests/load.py` simulates 30 students over the HTTP API and reports lost messages and time to first segment (acceptance 12). Run on the Windows GPU machine.
+- Load test: `tests/load.py` simulates 30 students over the HTTP API and reports lost messages and time to first segment (acceptance 12). Run on the Windows GPU machine for the pilot capacity claim. Harness architecture, baseline execution parameters, and initial measurements are documented in `docs/capacity.md`.
 - Front end: component and page tests with Vitest and Testing Library, with the API mocked. A Playwright smoke in `web/e2e/` runs against the compose stack with the fake worker and the CPU guard service: a student joins and chats, and the teacher sees it. Devices are still checked by hand against `docs/manual-tests.md` on a phone, a tablet and a laptop.
 
 ## Operations
