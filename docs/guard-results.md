@@ -312,10 +312,11 @@ Qwen 0.6B Q8_0 candidate (`Qwen3Guard-Gen-0.6B.Q8_0.gguf`) on llama-server with
 zero GPU-offloaded layers, 8 threads, and 30 parallel slots. Closed-loop client
 concurrency of 30 was evaluated over all 1,500 records.
 
-### Benchmark metrics
+### Evaluation run record
 
 | Metric | Measured value |
 |---|---:|
+| Qualification run status | Not qualified (run invalid due to timeouts) |
 | Corpus total records | 1,500 (450 XSTest, 1,050 original) |
 | Candidate model | Qwen3Guard-Gen-0.6B Q8_0 |
 | Server configuration | 8 CPU threads, 30 parallel slots, port 18080 |
@@ -331,13 +332,15 @@ concurrency of 30 was evaluated over all 1,500 records.
 | Median latency (p50) | 300.002 s |
 | 95th percentile latency (p95) | 300.312 s |
 | Completed check throughput | 0.1117 checks/s |
-| Qualification run status | Not qualified (run invalid due to timeouts) |
 
-Under closed-loop client concurrency of 30 on CPU without GPU offload, the
-server queue reached saturation. 936 requests exceeded the client request
-timeout limit of 300 seconds. Because the service is configured to fail closed
-on timeout or transport errors, 1,310 of 1,500 evaluations were blocked
-operationally, ensuring safety defaults are preserved during service overload.
+During this evaluation run, the host CPU was heavily contended by concurrent
+workloads. Under closed-loop client concurrency of 30 on CPU without GPU offload,
+the server queue reached saturation, causing 936 requests to reach the client
+request timeout limit of 300 seconds. Because the service is configured to fail
+closed on timeout or transport errors, timed-out requests were treated as
+operationally blocked (1,310 total blocked items). Rows with timeouts or transport
+errors do not produce valid verdicts. Consequently, this run is recorded as
+invalid and yields no quality or safety claims.
 
 ## Limitations
 
