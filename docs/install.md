@@ -2,7 +2,7 @@
 
 How to install the classroom-ai server on a school network, keep it running, trust its certificate on each device, and upgrade it. The choices behind these steps are in [architecture.md](architecture.md), [ADR-0003](adr/0003-docker-engine-in-wsl2.md) and [research/container-runtime.md](research/container-runtime.md).
 
-Steps marked **untested** have been put together from the cited documentation and have not been run yet. They are checked on the Windows test machine in step 9 of the [implementation plan](implementation-plan.md). Nothing in [Windows: Docker Engine in WSL2](#windows-docker-engine-in-wsl2) or [Start on boot](#start-on-boot) has been run, and no device has had the certificate trusted yet. What has been run, on a Mac with Docker: `init-env.sh` with and without a server name, `docker compose up -d --build` in both modes, HTTPS for an IP address and for a DNS name with the root certificate trusted (and refused without it), the redirect from port 80, fetching the root certificate with `docker compose cp`, and the upgrade below keeping data. The HTTPS checks published Caddy on other host ports (`HTTP_PORT`, `HTTPS_PORT`), because that Mac's port 443 is taken by another program. Changing `SERVER_NAME` on a running server has not been run.
+Steps marked **untested** have been put together from the cited documentation and have not been run yet. They are checked on the Windows test machine in step 9 of the [implementation plan](implementation-plan.md). Nothing in [Windows: Docker Engine in WSL2](#windows-docker-engine-in-wsl2) or [Start on boot](#start-on-boot) has been run, and no device has had the certificate trusted yet. What has been run, on a Mac with Docker: `init-env.sh` with and without a server name, `docker compose up -d --build` in both modes, HTTPS for an IP address and for a DNS name with the root certificate trusted (and refused without it), the redirect from port 80, downloading the root certificate from the admin page and fetching it with `docker compose cp`, and the upgrade below keeping data. The HTTPS checks published Caddy on other host ports (`HTTP_PORT`, `HTTPS_PORT`), because that Mac's port 443 is taken by another program. Changing `SERVER_NAME` on a running server has not been run.
 
 ## What you need
 
@@ -45,7 +45,13 @@ Caddy serves HTTPS on 443 for `SERVER_NAME` with a certificate from its own loca
 
 ## Trust the certificate
 
-Get the root certificate from the server once:
+Sign in to the server's admin page and choose **Download root certificate**.
+That is the normal way to get the root certificate. It is available only to an
+admin. Caddy also creates the local authority in Mac HTTP development mode,
+although a device using that plain HTTP development site does not need it.
+
+If the admin page is unavailable, this recovery command copies the same public
+certificate from the Caddy container:
 
 ```sh
 cd ~/classroom-ai

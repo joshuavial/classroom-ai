@@ -17,13 +17,68 @@
 	request_body {
 		max_size 1MB
 	}
+	# Caddy, rather than the app, reads its private CA volume.  This exact
+	# route first asks the app whether the session is an admin, then serves
+	# only the local authority's public root certificate.
+	# Compare the untouched URI with case-sensitive equality. Caddy's ordinary
+	# path matcher is case-insensitive, and its decoded path lets percent-encoded
+	# aliases match, both of which are too broad for a CA file route.
+	@root_certificate expression {http.request.orig_uri} == "/api/admin/root-certificate"
+	handle @root_certificate {
+		header Cache-Control "no-store"
+		@root_certificate_get method GET
+		handle @root_certificate_get {
+			route {
+				forward_auth {$APP_UPSTREAM:app:8000} {
+					uri /internal/root-certificate-authorize
+				}
+				# Always return the complete certificate. Discard validators and
+				# ranges so file_server cannot turn an authorized download into a
+				# 304, 412, 416, or partial response with download-only headers.
+				request_header -Range
+				request_header -If-Match
+				request_header -If-None-Match
+				request_header -If-Modified-Since
+				request_header -If-Unmodified-Since
+				root * {$ROOT_CERTIFICATE_DIR:/data/caddy/pki/authorities/local}
+				rewrite * /root.crt
+				@root_certificate_file file
+				handle @root_certificate_file {
+					# Apply download headers only after file_server reports success.
+					# In Caddy intercept, a handle_response block that does not write a
+					# body passes through the original response body from file_server.
+					# Any unexpected read error remains no-store without being
+					# presented as a certificate download.
+					intercept {
+						@root_certificate_success status 2xx
+						handle_response @root_certificate_success {
+							header Cache-Control "no-store"
+							header Content-Type "application/x-x509-ca-cert"
+							header Content-Disposition "attachment; filename=\"classroom-ai-root.crt\""
+						}
+						handle_response {
+							header Cache-Control "no-store"
+						}
+					}
+					file_server
+				}
+				respond "root certificate not found" 404
+			}
+		}
+		respond "method not allowed" 405
+	}
+	# Do not proxy private app endpoints from the public edge. The
+	# forward_auth request above is the only intended caller.
+	handle /internal/* {
+		respond "not found" 404
+	}
 	handle /api/* {
-		reverse_proxy app:8000
+		reverse_proxy {$APP_UPSTREAM:app:8000}
 	}
 	handle /healthz {
-		reverse_proxy app:8000
+		reverse_proxy {$APP_UPSTREAM:app:8000}
 	}
 	handle {
-		reverse_proxy web:3000
+		reverse_proxy {$WEB_UPSTREAM:web:3000}
 	}
 }

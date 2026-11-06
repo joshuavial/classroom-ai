@@ -9,6 +9,7 @@ import Models from "@/components/Models";
 import Workers from "@/components/Workers";
 import Records from "@/components/Records";
 import GuardSettings from "@/components/GuardSettings";
+import RootCertificate from "@/components/RootCertificate";
 
 type StaffRow = { username: string; role: Role; created_at: string };
 
@@ -121,6 +122,7 @@ export default function AdminPage() {
       <Workers />
       <Models />
       <GuardSettings />
+      <RootCertificate />
       <StaffAccounts />
       <Records />
     </main>

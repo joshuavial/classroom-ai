@@ -248,6 +248,21 @@ async def test_admin_endpoints_need_an_admin(client, app, make_staff, method, pa
     assert (teacher.status_code, teacher.json()) == (403, {"error": "forbidden"})
 
 
+async def test_root_certificate_authorization_is_private_get_only_and_admin_only(client, app, make_staff):
+    path = "/internal/root-certificate-authorize"
+    assert (await client.get(path)).status_code == 401
+    await sign_in(client, make_staff("teacher"))
+    assert (await client.get(path)).status_code == 403
+    assert (await client.post(path, headers=await csrf(client))).status_code == 405
+
+    admin_client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://test")
+    try:
+        await sign_in(admin_client, make_staff("admin"))
+        assert (await admin_client.get(path)).status_code == 204
+    finally:
+        await admin_client.aclose()
+
+
 async def test_admin_creates_a_teacher_who_can_sign_in(client, app, make_staff, dsn):
     admin = make_staff("admin")
     await sign_in(client, admin)

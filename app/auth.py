@@ -567,7 +567,18 @@ async def create_staff(request: Request) -> JSONResponse:
     return JSONResponse({"username": username, "role": body["role"]}, status_code=201)
 
 
+async def root_certificate_authorize(request: Request) -> Response:
+    """Authorize Caddy to serve its local CA's public root certificate.
+
+    The certificate file remains solely in Caddy's volume. Caddy calls this
+    route through the edge network before it reads that file.
+    """
+    await require_staff(request, "admin")
+    return Response(status_code=204)
+
+
 routes = [
+    Route("/internal/root-certificate-authorize", root_certificate_authorize, methods=["GET"]),
     Route("/api/setup", setup_status, methods=["GET"]),
     Route("/api/setup", setup, methods=["POST"]),
     Route("/api/me", me, methods=["GET"]),
