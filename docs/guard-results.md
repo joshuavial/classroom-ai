@@ -304,6 +304,41 @@ the frozen corpus. The `run` subcommand performs a full candidate run. The
 `latency` subcommand requires all three exact files and performs the interleaved
 comparison.
 
+## Live guard CPU evaluation benchmark
+
+A full 1,500 record evaluation was executed against the pinned CPU guard service
+using the frozen corpus in `tests/guard_set.jsonl`. The evaluation ran the pinned
+Qwen 0.6B Q8_0 candidate (`Qwen3Guard-Gen-0.6B.Q8_0.gguf`) on llama-server with
+zero GPU-offloaded layers, 8 threads, and 30 parallel slots. Closed-loop client
+concurrency of 30 was evaluated over all 1,500 records.
+
+### Benchmark metrics
+
+| Metric | Measured value |
+|---|---:|
+| Corpus total records | 1,500 (450 XSTest, 1,050 original) |
+| Candidate model | Qwen3Guard-Gen-0.6B Q8_0 |
+| Server configuration | 8 CPU threads, 30 parallel slots, port 18080 |
+| Client concurrency | 30 closed-loop workers |
+| Parse failures | 0 |
+| Timeouts (300 s limit) | 936 |
+| Transport failures | 4 |
+| True Positives (TP) | 356 |
+| True Negatives (TN) | 185 |
+| False Positives (FP) | 415 |
+| False Negatives (FN) | 544 |
+| Operationally blocked (fail-closed) | 1,310 / 1,500 (87.33%) |
+| Median latency (p50) | 300.002 s |
+| 95th percentile latency (p95) | 300.312 s |
+| Completed check throughput | 0.1117 checks/s |
+| Qualification run status | Not qualified (run invalid due to timeouts) |
+
+Under closed-loop client concurrency of 30 on CPU without GPU offload, the
+server queue reached saturation. 936 requests exceeded the client request
+timeout limit of 300 seconds. Because the service is configured to fail closed
+on timeout or transport errors, 1,310 of 1,500 evaluations were blocked
+operationally, ensuring safety defaults are preserved during service overload.
+
 ## Limitations
 
 XSTest is prompt-only. All 1,050 original classroom items are synthetic,
