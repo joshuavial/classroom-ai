@@ -1318,7 +1318,10 @@ def run_candidate(
         _wait_for_server(base_url, process, args.startup_timeout)
         startup_log = Path(log_file.name).read_text(encoding="utf-8", errors="replace")
         validate_cpu_only_log(startup_log)
-        call = lambda payload: chat_completion(base_url, payload, args.timeout)
+
+        def call(payload):
+            return chat_completion(base_url, payload, args.timeout)
+
         if spec.adapter == "qwen":
             fixed = qwen_template_fixture_records(records)
             for record in fixed:
@@ -1334,7 +1337,9 @@ def run_candidate(
                         "role": record["role"],
                     }
                 )
-            checker = lambda record: check_qwen(record, call, spec.name)
+
+            def checker(record):
+                return check_qwen(record, call, spec.name)
         else:
             fixed_reply = next(record for record in records if record["role"] == "reply")
             query = SHIELDSTRAL_POLICIES[0][1]
@@ -1350,7 +1355,9 @@ def run_candidate(
                     "role": fixed_reply["role"],
                 }
             )
-            checker = lambda record: check_shieldstral(record, call, spec.name)
+
+            def checker(record):
+                return check_shieldstral(record, call, spec.name)
 
         warmup = checker(next(record for record in records if record["expected_safe"]))
         if warmup.errors:
@@ -1553,17 +1560,18 @@ def run_latency_pass(
             state["template_evidence"] = _compact_template_evidence(
                 state["spec"], records, state["base_url"], args.timeout
             )
-            call = lambda payload, base_url=state["base_url"]: chat_completion(
-                base_url, payload, args.timeout
-            )
+            def call(payload, base_url=state["base_url"]):
+                return chat_completion(base_url, payload, args.timeout)
+
             if state["spec"].adapter == "qwen":
-                checker = lambda record, call=call, name=state["name"]: check_qwen(
-                    record, call, name
-                )
+
+                def checker(record, call=call, name=state["name"]):
+                    return check_qwen(record, call, name)
+
             else:
-                checker = lambda record, call=call, name=state["name"]: check_shieldstral(
-                    record, call, name
-                )
+
+                def checker(record, call=call, name=state["name"]):
+                    return check_shieldstral(record, call, name)
             state["checker"] = checker
             warmup = checker(warmup_record)
             if warmup.errors:

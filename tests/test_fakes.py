@@ -19,7 +19,7 @@ async def test_fake_worker_lists_models_and_streams_reply():
                             json={"model": "m1", "stream": True, "messages": []}) as r:
             lines = [line async for line in r.aiter_lines() if line.startswith("data: ")]
     assert lines[-1] == "data: [DONE]"
-    text = "".join(json.loads(l[6:])["choices"][0]["delta"].get("content", "") for l in lines[:-1])
+    text = "".join(json.loads(line[6:])["choices"][0]["delta"].get("content", "") for line in lines[:-1])
     assert text == "ab"
 
 

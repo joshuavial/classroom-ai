@@ -3,10 +3,16 @@
 import asyncio
 
 import psycopg
+import pytest
 
 from tests.helpers import make_staff, new_client, post, sign_in
-from tests.test_classes import join
-from tests.test_console import lesson_with_students, seed, teacher  # noqa: F401
+from tests.test_console import lesson_with_students, seed
+
+
+@pytest.fixture
+async def teacher(client, dsn):
+    await sign_in(client, await make_staff(dsn, "teacher"))
+    return client
 
 
 async def flag_of(teacher, student_id):

@@ -3,7 +3,9 @@
 import psycopg
 
 from app import auth
-from tests.test_auth import PASSWORD, audit_rows, csrf, password_hash, make_staff, setup_code, sign_in  # noqa: F401
+from tests.test_auth import PASSWORD, audit_rows, csrf, sign_in
+
+pytest_plugins = ["tests.test_auth"]
 
 
 def audit_count(dsn: str) -> int:

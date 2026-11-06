@@ -382,7 +382,7 @@ async def test_retention_skips_a_session_in_a_roster_edit_then_deletes_it_later(
         d = Data(conn)
         session = await d.session("closed", NOW - 40 * DAY)
         student = await d.student(session)
-        other = await d.session("closed", NOW - 40 * DAY)
+        await d.session("closed", NOW - 40 * DAY)
     editor = await psycopg.AsyncConnection.connect(empty_dsn)
     await editor.execute(
         "SELECT 1 FROM students st JOIN lesson_sessions l ON l.id = st.lesson_session_id"
@@ -497,7 +497,7 @@ async def test_retention_skips_a_message_whose_flag_is_being_reviewed(pool, empt
         conv = await d.conversation(await d.student(await d.session()), NOW - 400 * DAY)
         reviewed = await d.message(conv, NOW - 40 * DAY)
         flag = await d.flag(reviewed)
-        plain = await d.message(conv, NOW - 40 * DAY)
+        await d.message(conv, NOW - 40 * DAY)
     reviewer = await hold(empty_dsn, "UPDATE flags SET reviewed_at = now() WHERE id = %s", (flag,))
     assert (await run_promptly(pool))["messages"] == 1  # the unflagged one goes
     async with pool.connection() as conn:
@@ -526,7 +526,7 @@ async def test_retention_skips_a_session_with_one_student_locked(pool, empty_dsn
         busy = await d.session("closed", NOW - 40 * DAY)
         locked = await d.student(busy, "111111")
         await d.student(busy, "222222")
-        idle = await d.session("closed", NOW - 40 * DAY)
+        await d.session("closed", NOW - 40 * DAY)
     editor = await hold(empty_dsn, "SELECT 1 FROM students WHERE id = %s FOR UPDATE", (locked,))
     assert (await run_promptly(pool))["sessions"] == 1
     async with pool.connection() as conn:

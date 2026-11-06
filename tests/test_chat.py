@@ -4,7 +4,6 @@ import asyncio
 import json
 import logging
 import socket
-from datetime import UTC, datetime
 
 import anyio
 import httpx
