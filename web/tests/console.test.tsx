@@ -1,9 +1,22 @@
+import fs from "node:fs";
+import path from "node:path";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import { CardGrid, Console, TranscriptPanel, UsageStrip } from "@/app/teach/console";
+import styles from "@/app/teach/console.module.css";
 import type { StudentCard, Transcript } from "@/lib/types";
 import { mockApi } from "./fetch";
+
+function parseCssRules(css: string): CSSRule[] {
+  const style = document.createElement("style");
+  style.textContent = css;
+  document.head.appendChild(style);
+  const sheet = Array.from(document.styleSheets).find((s) => s.ownerNode === style);
+  const rules = sheet ? Array.from(sheet.cssRules) : [];
+  style.remove();
+  return rules;
+}
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -104,4 +117,162 @@ test("clicking a card opens its transcript and Mark reviewed posts the review", 
   await vi.waitFor(() =>
     expect(fetch.mock.calls.some(([url, init]) => url === "/api/flags/5/review" && init?.method === "POST")).toBe(true),
   );
+});
+
+test("full keyboard-only navigation: Tab to card, Enter to open, Tab to Mark reviewed, Enter to review", async () => {
+  document.cookie = "csrf_token=tok";
+  const reviewedTranscript: Transcript = {
+    ...transcript,
+    conversations: [
+      {
+        ...transcript.conversations[0],
+        messages: [
+          transcript.conversations[0].messages[0],
+          {
+            ...transcript.conversations[0].messages[1],
+            flags: [
+              {
+                ...transcript.conversations[0].messages[1].flags[0],
+                reviewed_by: "ms-smith",
+                reviewed_at: "2026-10-10T00:00:00Z",
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+
+  const fetch = mockApi({
+    "GET /sessions/7/students": [
+      {
+        body: {
+          students: [
+            card({ id: 1, name: "Aroha", unreviewed_flags: 1 }),
+            card({ id: 2, name: "Ben", code: "654321", unreviewed_flags: 0 }),
+          ],
+        },
+      },
+      {
+        body: {
+          students: [
+            card({ id: 1, name: "Aroha", unreviewed_flags: 0 }),
+            card({ id: 2, name: "Ben", code: "654321", unreviewed_flags: 0 }),
+          ],
+        },
+      },
+    ],
+    "GET /sessions/7/usage": {
+      body: { active_students: 2, total_messages: 2, per_student: [], models: [], flags_by_category: [] },
+    },
+    "GET /students/1/transcript": [
+      { body: transcript },
+      { body: reviewedTranscript },
+    ],
+    "POST /flags/5/review": { body: { id: 5 } },
+  });
+
+  render(<Console sessionId={7} version={0} />);
+  const user = userEvent.setup();
+
+  // 1. Initial cards display: verify classes
+  const arohaCard = await screen.findByRole("button", { name: /Aroha/ });
+  const benCard = screen.getByRole("button", { name: /Ben/ });
+  expect(arohaCard.className).toContain(styles.card);
+  expect(benCard.className).toContain(styles.card);
+
+  // 2. Sequential keyboard Tab navigation between cards
+  await user.tab();
+  expect(arohaCard).toHaveFocus();
+  expect(arohaCard.matches(":focus")).toBe(true);
+  expect(arohaCard).toHaveAttribute("aria-pressed", "false");
+
+  await user.tab();
+  expect(benCard).toHaveFocus();
+  expect(benCard.matches(":focus")).toBe(true);
+  expect(benCard).toHaveAttribute("aria-pressed", "false");
+
+  // Shift-Tab back to first card
+  await user.tab({ shift: true });
+  expect(arohaCard).toHaveFocus();
+
+  // 3. Open transcript via Enter key
+  await user.keyboard("{Enter}");
+
+  const panel = await screen.findByRole("region", { name: "Transcript for Aroha" });
+  expect(panel.className).toContain(styles.panel);
+  expect(arohaCard).toHaveAttribute("aria-pressed", "true");
+  expect(arohaCard.className).toContain(styles.selected);
+
+  // Heading receives programmatic focus on transcript open
+  const heading = within(panel).getByRole("heading", { level: 3 });
+  expect(heading).toHaveFocus();
+
+  // 4. Tab through interactive controls inside transcript
+  await user.tab();
+  const closeButton = within(panel).getByRole("button", { name: "Close" });
+  expect(closeButton).toHaveFocus();
+  expect(closeButton.matches(":focus")).toBe(true);
+
+  await user.tab();
+  const reviewButton = within(panel).getByRole("button", { name: "Mark reviewed" });
+  expect(reviewButton).toHaveFocus();
+  expect(reviewButton.matches(":focus")).toBe(true);
+
+  // 5. Submit flag review via Enter key
+  await user.keyboard("{Enter}");
+
+  await vi.waitFor(() =>
+    expect(fetch.mock.calls.some(([url, init]) => url === "/api/flags/5/review" && (init as RequestInit | undefined)?.method === "POST")).toBe(true),
+  );
+
+  expect(await screen.findByText("Marked reviewed.")).toBeInTheDocument();
+
+  // 6. Post-review transition: verify the focused "Mark reviewed" button is unmounted
+  // and replaced by "Reviewed by ms-smith."
+  expect(await screen.findByText("Reviewed by ms-smith.")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Mark reviewed" })).not.toBeInTheDocument();
+
+  // With the active element removed from the DOM, focus reverts to document body.
+  expect(document.body).toHaveFocus();
+
+  // Tab resumes keyboard navigation starting at the first interactive element.
+  await user.tab();
+  expect(arohaCard).toHaveFocus();
+
+  // User tabs through to Close button and presses Enter to dismiss the transcript
+  await user.tab(); // Ben card
+  expect(benCard).toHaveFocus();
+
+  await user.tab(); // Close button
+  expect(closeButton).toHaveFocus();
+
+  await user.keyboard("{Enter}");
+  expect(screen.queryByRole("region", { name: "Transcript for Aroha" })).not.toBeInTheDocument();
+  expect(arohaCard).toHaveAttribute("aria-pressed", "false");
+});
+
+test("focus indicators are styled for cards and panel buttons on focus-visible", () => {
+  const cssPath = path.resolve(__dirname, "../app/teach/console.module.css");
+  const css = fs.readFileSync(cssPath, "utf-8");
+
+  const rules = parseCssRules(css) as CSSStyleRule[];
+
+  const cardFocusRule = rules.find((r) => r.selectorText?.includes(".card:focus-visible"));
+  expect(cardFocusRule).toBeDefined();
+  expect(cardFocusRule!.style.outline).toBe("3px solid #10324a");
+  expect(cardFocusRule!.style.outlineOffset).toBe("2px");
+
+  const cardSelectedRule = rules.find((r) => r.selectorText?.includes(".card.selected"));
+  expect(cardSelectedRule).toBeDefined();
+  expect(cardSelectedRule!.style.outline).toBe("3px solid #10324a");
+  expect(cardSelectedRule!.style.outlineOffset).toBe("2px");
+
+  const panelButtonFocusRule = rules.find((r) => r.selectorText?.includes(".panel button:focus-visible"));
+  expect(panelButtonFocusRule).toBeDefined();
+  expect(panelButtonFocusRule!.style.outline).toBe("2px solid #10324a");
+  expect(panelButtonFocusRule!.style.outlineOffset).toBe("2px");
+
+  // Verify no CSS rule strips outline
+  expect(css).not.toMatch(/outline:\s*(none|0)(?![a-zA-Z0-9_-])/);
 });

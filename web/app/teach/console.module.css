@@ -46,8 +46,14 @@
   border-width: 3px;
 }
 
+.card:focus-visible,
 .card.selected {
   outline: 3px solid #10324a;
+  outline-offset: 2px;
+}
+
+.panel button:focus-visible {
+  outline: 2px solid #10324a;
   outline-offset: 2px;
 }
 

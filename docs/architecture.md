@@ -122,7 +122,7 @@ The app serves the public JSON API under `/api/` and `/healthz`. It also exposes
 The Next.js app in `web/` (ADR-0006). It holds no data and no secrets. Pages are client components that call the app's JSON API. Server-side rendering features stay minimal, and no server action talks to the database. Three web surfaces:
 
 - `/` student chat. Join, a header with the student's name and code, model picker, conversation list, chat.
-- `/teach` teacher console. Models on and off, session controls, code roster, printable slips, live class grid, transcripts, flags, usage summary.
+- `/teach` teacher console. Models on and off, session controls, code roster, printable slips, live class grid, transcripts, flags, usage summary. Supports full keyboard navigation with visible focus-visible indicators across cards, transcript panels, and review actions.
 - `/admin` tech teacher. Workers and join command, models on/off, category actions and messages, retention, staff accounts, backup, audit log.
 
 Live updates come from the app over Server-Sent Events, read in the browser with `EventSource`. SSE goes one way, works through Caddy with no extra configuration, and reconnects on its own.
@@ -199,7 +199,7 @@ Staff:
 Students (D1):
 
 - The teacher starts a lesson session for a class and generates a batch of student codes, 30 by default. Each code is six digits, unique among open sessions, and stored as an unbound `students` row. The teacher can generate more during the session.
-- "Print slips" opens `/teach/slips`, a print-friendly page that lays the unused codes out as A4 cut-out slips, one per slip, with the class name and the chat web address on each. The browser prints it with print CSS; there is no PDF library.
+- "Print slips" opens `/teach/slips`, a print-friendly page that lays the unused codes out as A4 cut-out slips, three across, one per slip, with the class name and the chat web address on each. The browser prints it with print CSS; there is no PDF library. Print CSS formats a three-column A4 grid, suppresses page breaks within slips, and hides controls and instructions under print media.
 - A student enters a code and a name. If the code is unbound, the app binds it to that name, records the time and sets a session cookie. If the code is already bound, the app signs the device in as that student under the bound name and ignores the name typed. That is how a student resumes after closing the tab or on another device.
 - The student can't change the bound name. The teacher can rename a student, unbind a code or remove it. Unbinding marks the student removed and adds a fresh unbound row with the same code, so earlier conversations stay with the old name. Removing retires the code. Either way the old cookies stop working.
 - Every student page shows the bound name and code in a header that stays visible (R4.7).
