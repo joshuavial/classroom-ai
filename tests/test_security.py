@@ -11,7 +11,6 @@ or tampered tokens fail closed against the database index with zero 500 errors.
 """
 
 import asyncio
-import http.client
 import hmac
 import json
 import logging

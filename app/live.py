@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import json
 import logging
+from typing import Any
 
 import anyio
 import psycopg

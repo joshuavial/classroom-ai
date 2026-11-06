@@ -15,7 +15,6 @@ from starlette.routing import Route
 
 from app.auth import (
     STUDENT_COLUMNS,
-    STUDENT_LIVE,
     HTTPError,
     check_session_csrf,
     client_ip,
